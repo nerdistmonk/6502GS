@@ -985,6 +985,8 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         text_directive(a, ln, true);
     } else if (strcmp(name, "END") == 0) {
         a->ended = true;
+    } else if (strcmp(name, "LONGA") == 0 || strcmp(name, "LONGI") == 0) {
+        /* merlin32 accepts these and ignores them; they do not change width. */
     } else {
         diag(a, "unknown opcode or directive: %s", name);
     }

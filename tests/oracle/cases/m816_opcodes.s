@@ -44,3 +44,7 @@ TOP     LDA   >$1234
         LDA   #$12
         LDA   #<$1234
         LDA   #>$1234
+        LONGA ON
+        LONGI ON
+        LDA   #$12
+        LDX   #$34
