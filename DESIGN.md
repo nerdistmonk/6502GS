@@ -50,9 +50,9 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ### Phase 0: Foundations
 
-- [ ] CMake project skeleton, GCC warnings enabled, CTest wired up
-- [ ] Test harness and oracle-comparison script
-- [ ] Decide language standard (C vs C++17) — see open questions
+- [x] CMake project skeleton, GCC warnings enabled, CTest wired up
+- [~] Test harness (CTest smoke test added; oracle-comparison script not yet)
+- [x] Language: C11 (decided by user)
 - [ ] Collect reference excerpts: Merlin 16+ assembler chapter, 65C02/65C816 opcode tables
 
 ### Phase 1: Core 6502 assembler
@@ -99,11 +99,12 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ## Open questions
 
-- Implementation language: C (matches merlin32 layout) or C++17 (matches 6502GS)?
 - Command-line interface: mirror merlin32 flags, or a new CLI?
 - How strictly to match merlin32 error text versus our own messages?
 
 ## Done criteria
+
+The skeleton binary is named `asm816` as a placeholder; rename it if you prefer.
 
 Phases 1-4 are done when the oracle suite passes for 6502, 65C02, and
 65C816 sources, and all tests run under `ctest` on Linux with GCC.
