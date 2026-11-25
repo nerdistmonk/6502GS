@@ -38,6 +38,9 @@ typedef struct {
     bool ext_used;
     int ext_line;
     int ext_label_line;
+    /* Relocation kind of the value; for an EXT name, the name itself. */
+    RelKind kind;
+    char ext_of[ASM_NAME_MAX + 1];
 } Symbol;
 
 typedef enum {
@@ -162,6 +165,16 @@ typedef struct {
     bool quiet;
     /* Count of EXT name reads. An operand that reads one is assembled in its wide form. */
     size_t ext_refs;
+    /* REL mode: labels are relocatable and fixups are recorded. */
+    bool rel;
+    /* Set by ORG in REL mode: later labels and `*` are absolute. */
+    bool rel_abs;
+    /* OMF link: every module is REL from the start, even without a REL directive. */
+    bool force_rel;
+    /* Set for link modules. A REL module in a flat link keeps its start address. */
+    bool linked;
+    /* Kind of the most recent successful expression evaluation. */
+    ExprValue last_eval;
     /* ENT records from pass 2, then the resolved exports and the used EXT names. */
     NameList ents;
     NameList exports;
@@ -510,7 +523,7 @@ static bool char_test_operand(const char *op)
     return strlen(op) == 4 && op[2] == ']' && op[3] >= '0' && op[3] <= '0' + MACRO_ARGS;
 }
 
-static bool lookup_sym(void *ctx, const char *name, int32_t *value)
+static bool lookup_sym(void *ctx, const char *name, ExprValue *value)
 {
     Asm *a = ctx;
     char key[SYM_KEY_MAX];
@@ -518,7 +531,9 @@ static bool lookup_sym(void *ctx, const char *name, int32_t *value)
 
     /* MX is a value only inside DO/IF operands, as in merlin32. */
     if (a->in_cond && is_mx_token(name)) {
-        *value = (a->acc16 ? 0 : 2) | (a->idx16 ? 0 : 1);
+        value->value = (a->acc16 ? 0 : 2) | (a->idx16 ? 0 : 1);
+        value->kind = REL_CONST;
+        value->ext[0] = '\0';
         return true;
     }
     if (!make_key(a, name, key, sizeof key)) {
@@ -542,17 +557,21 @@ static bool lookup_sym(void *ctx, const char *name, int32_t *value)
         s->ext_used = true;
         a->ext_refs++;
     }
-    *value = s->value;
+    value->value = s->value;
+    value->kind = s->kind;
+    snprintf(value->ext, sizeof value->ext, "%s", s->ext_of);
     return true;
 }
 
 /* Sizing passes repeat until no symbol or instruction size changes; the
  * final pass (pass 2) then emits with that stable layout. */
-static void define_label(Asm *a, const char *name, int32_t value, bool defined, bool equ)
+static void define_label_rel(Asm *a, const char *name, int32_t value, bool defined, bool equ, const ExprValue *rel)
 {
     char key[SYM_KEY_MAX];
     Symbol *s;
     bool var = name[0] == ']';
+    ExprValue plain = { 0, false, a->rel && !a->rel_abs ? REL_LOCAL : REL_CONST, "" };
+    const ExprValue *kv = rel != NULL ? rel : &plain;
 
     if (name[0] != ':' && !var) {
         snprintf(a->scope, sizeof a->scope, "%s", name);
@@ -575,6 +594,8 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
         s->value = value;
         s->defined = defined;
         s->is_equ = true;
+        s->kind = kv->kind;
+        snprintf(s->ext_of, sizeof s->ext_of, "%s", kv->ext);
         if (!equ) {
             s->oz_label = true;
             s->oz_def_gen = a->ozgen;
@@ -613,9 +634,16 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
     s->value = value;
     s->defined = defined;
     s->is_equ = equ;
+    s->kind = kv->kind;
+    snprintf(s->ext_of, sizeof s->ext_of, "%s", kv->ext);
     if (!equ) {
         s->seen = a->iter;
     }
+}
+
+static void define_label(Asm *a, const char *name, int32_t value, bool defined, bool equ)
+{
+    define_label_rel(a, name, value, defined, equ, NULL);
 }
 
 /* Keeps an EQU operand as written so the symbol table can print it. */
@@ -670,17 +698,28 @@ static bool vars_changed(const Asm *a)
     return false;
 }
 
-static bool eval(Asm *a, const char *text, int32_t *value, bool *defined)
+static bool eval_full(Asm *a, const char *text, ExprValue *ev)
 {
     ExprEnv env;
-    ExprValue ev;
     const char *err = NULL;
 
     env.lookup = lookup_sym;
     env.ctx = a;
     env.pc = a->pc;
-    if (!expr_eval(text, &env, &ev, &err)) {
+    env.rel = a->rel && !a->rel_abs;
+    if (!expr_eval(text, &env, ev, &err)) {
         diag(a, "%s", err);
+        return false;
+    }
+    a->last_eval = *ev;
+    return true;
+}
+
+static bool eval(Asm *a, const char *text, int32_t *value, bool *defined)
+{
+    ExprValue ev;
+
+    if (!eval_full(a, text, &ev)) {
         return false;
     }
     *value = ev.value;
@@ -689,18 +728,32 @@ static bool eval(Asm *a, const char *text, int32_t *value, bool *defined)
 }
 
 /* Pass 1 tolerates undefined symbols; pass 2 reports them. */
-static bool eval_operand(Asm *a, const char *text, int32_t *value, bool *defined)
+static bool eval_operand_full(Asm *a, const char *text, ExprValue *ev)
 {
-    if (!eval(a, text, value, defined)) {
+    if (!eval_full(a, text, ev)) {
         return false;
     }
-    if (!*defined) {
-        *value = 0;
+    if (!ev->defined) {
+        ev->value = 0;
+        ev->kind = REL_CONST;
+        ev->ext[0] = '\0';
         if (a->pass == 2) {
             undefined_error(a, text);
             return false;
         }
     }
+    return true;
+}
+
+static bool eval_operand(Asm *a, const char *text, int32_t *value, bool *defined)
+{
+    ExprValue ev;
+
+    if (!eval_operand_full(a, text, &ev)) {
+        return false;
+    }
+    *value = ev.value;
+    *defined = ev.defined;
     return true;
 }
 
@@ -836,6 +889,9 @@ static void org_directive(Asm *a, const SrcLine *ln)
         return;
     }
     a->pc = v;
+    if (a->rel) {
+        a->rel_abs = true;
+    }
 }
 
 /* DS n, DS n,fill, DS, DS \ and DS \expr (page-align with optional fill). */
@@ -890,6 +946,52 @@ static void ds_directive(Asm *a, const SrcLine *ln)
  * ADR/ADRL truncate to their width instead of range-checking, and a bare
  * ADR/ADRL emits nothing, both as merlin32 does.
  */
+/* Records a patch for a relocatable value at body offset `offset`. Only the
+ * pass that emits bytes records fixups. Returns false after a diagnostic. */
+static bool record_fixup(Asm *a, size_t offset, const ExprValue *ev, int size, int shift)
+{
+    Binary *bin = a->bin;
+    Fixup *f;
+
+    if (!a->rel || a->pass != 2 || a->dummy || ev->kind == REL_CONST) {
+        return true;
+    }
+    if (ev->kind == REL_BAD) {
+        diag(a, "expression cannot be relocated");
+        return false;
+    }
+    if (bin->nfix == bin->capfix) {
+        size_t cap = bin->capfix ? bin->capfix * 2 : 32;
+        Fixup *grown = realloc(bin->fix, cap * sizeof *grown);
+
+        if (grown == NULL) {
+            diag(a, "out of memory");
+            return false;
+        }
+        bin->fix = grown;
+        bin->capfix = cap;
+    }
+    f = &bin->fix[bin->nfix++];
+    f->offset = offset;
+    f->value = ev->value;
+    f->size = size;
+    f->shift = shift;
+    f->external = ev->kind == REL_EXT;
+    snprintf(f->name, sizeof f->name, "%s", f->external ? ev->ext : "");
+    return true;
+}
+
+static int reloc_shift(char mod)
+{
+    if (mod == '>') {
+        return -8;
+    }
+    if (mod == '^') {
+        return -16;
+    }
+    return 0;
+}
+
 static void data_directive(Asm *a, const SrcLine *ln, int width)
 {
     char item[ASM_LINE_MAX];
@@ -904,8 +1006,8 @@ static void data_directive(Asm *a, const SrcLine *ln, int width)
     while (next_item(&p, item, sizeof item)) {
         const char *e = item;
         int32_t v = 0;
-        bool defined = false;
         uint8_t bytes[4];
+        ExprValue ev;
 
         if (*e == '#') {
             e++;
@@ -920,14 +1022,20 @@ static void data_directive(Asm *a, const SrcLine *ln, int width)
             diag(a, "missing data expression");
             return;
         }
-        if (!eval_operand(a, e, &v, &defined)) {
+        if (!eval_operand_full(a, e, &ev)) {
             return;
         }
+        v = ev.value;
         if (width == 1) {
             uint8_t b = (bytes[0] == '>') ? (uint8_t)((v >> 8) & 0xFF) : (uint8_t)(v & 0xFF);
 
+            if (!record_fixup(a, a->bin->len, &ev, 1, bytes[0] == '>' ? -8 : 0)) {
+                return;
+            }
             emit(a, &b, 1);
         } else if (width == 2) {
+            int shift = (bytes[0] == '>') ? -8 : 0;
+
             if (bytes[0] == '>') {
                 v = (v >> 8) & 0xFFFF;
             }
@@ -941,11 +1049,21 @@ static void data_directive(Asm *a, const SrcLine *ln, int width)
             }
             bytes[0] = (uint8_t)(v & 0xFF);
             bytes[1] = (uint8_t)((v >> 8) & 0xFF);
+            if (!record_fixup(a, a->bin->len, &ev, 2, shift)) {
+                return;
+            }
             emit(a, bytes, 2);
         } else {
             int32_t shifted = (bytes[0] == '>') ? (v >> 8) : v;
             int k;
 
+            if (width == 4 && ev.kind != REL_CONST && a->pass == 2 && !a->dummy && ((shifted >> 24) & 0xFF) != 0) {
+                diag(a, "relocatable value does not fit in 3 bytes");
+                return;
+            }
+            if (!record_fixup(a, a->bin->len, &ev, width == 4 ? 3 : width, bytes[0] == '>' ? -8 : 0)) {
+                return;
+            }
             for (k = 0; k < width; k++) {
                 bytes[k] = (uint8_t)((shifted >> (8 * k)) & 0xFF);
             }
@@ -1324,7 +1442,8 @@ static bool block_move(Asm *a, const char *mnem, const SrcLine *ln, uint8_t *out
     size_t len;
     int32_t src = 0;
     int32_t dst = 0;
-    bool defined = false;
+    ExprValue sv;
+    ExprValue dv;
 
     if (comma == NULL || comma == ln->operand || comma[1] == '\0') {
         diag(a, "%s needs two bank operands", mnem);
@@ -1333,9 +1452,15 @@ static bool block_move(Asm *a, const char *mnem, const SrcLine *ln, uint8_t *out
     len = (size_t)(comma - ln->operand);
     memcpy(first, ln->operand, len);
     first[len] = '\0';
-    if (!eval_operand(a, first, &src, &defined) || !eval_operand(a, comma + 1, &dst, &defined)) {
+    if (!eval_operand_full(a, first, &sv) || !eval_operand_full(a, comma + 1, &dv)) {
         return false;
     }
+    if (a->rel && (sv.kind != REL_CONST || dv.kind != REL_CONST)) {
+        diag(a, "%s bank cannot be relocatable", mnem);
+        return false;
+    }
+    src = sv.value;
+    dst = dv.value;
     if (src < 0 || src > 0xFF || dst < 0 || dst > 0xFF) {
         diag(a, "%s bank must be 0..$FF", mnem);
         return false;
@@ -1641,6 +1766,14 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
     return false;
 }
 
+static bool branch_operand(const char *mnem, const Operand *o)
+{
+    uint8_t tmp;
+
+    return o->form == F_DIR && o->index == '\0'
+        && (opcode_lookup(mnem, AM_REL, &tmp) || opcode_lookup(mnem, AM_RL16, &tmp));
+}
+
 static void instruction(Asm *a, const char *mnem, bool forced, const SrcLine *ln)
 {
     Operand o;
@@ -1657,7 +1790,12 @@ static void instruction(Asm *a, const char *mnem, bool forced, const SrcLine *ln
     if (!parse_operand(a, ln->operand, &o)) {
         return;
     }
+    a->last_eval.kind = REL_CONST;
     if (encode_instruction(a, mnem, forced, &o, bytes, &size)) {
+        if (a->rel && size > 1 && !branch_operand(mnem, &o)
+            && !record_fixup(a, a->bin->len + 1, &a->last_eval, size - 1, reloc_shift(o.mod))) {
+            return;
+        }
         emit(a, bytes, size);
     }
 }
@@ -1727,6 +1865,14 @@ static void name_directive(Asm *a, const SrcLine *ln)
     }
     memcpy(a->bin->out_name, s, n);
     a->bin->out_name[n] = '\0';
+}
+
+/* REL marks the source as a relocatable module. */
+static void rel_directive(Asm *a, const SrcLine *ln)
+{
+    (void)ln;
+    a->rel = true;
+    a->bin->rel = true;
 }
 
 /* TYP keeps the low byte of its expression. Like merlin32, a missing or
@@ -1857,6 +2003,8 @@ static void ext_directive(Asm *a, const SrcLine *ln)
         s->defined = true;
         s->is_equ = true;
         s->value = value;
+        s->kind = REL_EXT;
+        snprintf(s->ext_of, sizeof s->ext_of, "%s", name);
     }
 }
 
@@ -1978,6 +2126,8 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         ext_directive(a, ln);
     } else if (strcmp(name, "ENT") == 0) {
         ent_directive(a, ln);
+    } else if (strcmp(name, "REL") == 0) {
+        rel_directive(a, ln);
     } else if (strcmp(name, "TYP") == 0) {
         typ_directive(a, ln);
     } else {
@@ -2028,7 +2178,7 @@ static bool directive_known(const char *name)
     static const char *const names[] = {
         "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "STR", "INV", "FLS", "REV",
         "ADR", "ADRL", "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "LST", "PAG", "TR", "EXP",
-        "ERR", "XC", "SAV", "DSK", "TYP", "EQU", "=", "KBD", "EXT", "ENT",
+        "ERR", "XC", "SAV", "DSK", "TYP", "EQU", "=", "KBD", "EXT", "ENT", "REL",
         "DO", "IF", "ELSE", "FIN",
     };
     size_t i;
@@ -3363,6 +3513,7 @@ static void assemble_statement(Asm *a, const char *text)
             int32_t v = 0;
             bool defined = false;
             bool var = ln.has_label && ln.label[0] == ']';
+            ExprValue ev;
 
             a->lst_type = var ? LST_VARIABLE : LST_EQUIV;
             a->lst_vis = (a->lup_open || (var && a->nframes > 1)) ? LV_HIDE : LV_SHOW;
@@ -3370,8 +3521,10 @@ static void assemble_statement(Asm *a, const char *text)
                 diag(a, "EQU needs a label");
             } else if (!ln.has_operand) {
                 diag(a, "EQU needs a value");
-            } else if (eval_operand(a, ln.operand, &v, &defined)) {
-                define_label(a, ln.label, v, defined, true);
+            } else if (eval_operand_full(a, ln.operand, &ev)) {
+                v = ev.value;
+                defined = ev.defined;
+                define_label_rel(a, ln.label, v, defined, true, &ev);
                 set_equ_text(a, ln.label, ln.operand);
             }
         } else if (strcmp(name, "KBD") == 0) {
@@ -3427,12 +3580,14 @@ static bool run_pass(Asm *a, int pass)
     listing_clear(&a->lst);
     a->nfiles = 0;
     a->line_no = 0;
-    a->pc = a->start_pc;
+    /* A standalone REL module is laid out from 0. bin->rel is set by an earlier run once REL is seen. */
+    a->pc = (a->force_rel || (!a->linked && a->bin->rel)) ? 0 : a->start_pc;
     a->scope[0] = '\0';
     a->ended = false;
     a->acc16 = false;
     a->idx16 = false;
     a->dummy = false;
+    a->rel = a->force_rel;
     a->ncond = 0;
     a->cond_on = true;
     a->in_cond = false;
@@ -3669,6 +3824,10 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
     out->out_name[0] = '\0';
     out->file_type = 0;
     out->typed = false;
+    out->rel = false;
+    out->fix = NULL;
+    out->nfix = 0;
+    out->capfix = 0;
     a.path = path;
     a.macro_dir = macro_dir;
     a.listing = listing_stem != NULL;
@@ -3712,7 +3871,7 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
     return ok;
 }
 
-bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, const AsmName *globals, size_t nglobals, bool print_errors, AsmModule *out)
+bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, bool force_rel, const AsmName *globals, size_t nglobals, bool print_errors, AsmModule *out)
 {
     Asm a;
     bool pass2_started;
@@ -3724,6 +3883,8 @@ bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, 
     a.macro_dir = macro_dir;
     a.bin = &out->bin;
     a.start_pc = start_pc;
+    a.force_rel = force_rel;
+    a.linked = true;
     a.globals = globals;
     a.nglobals = nglobals;
     a.quiet = !print_errors;
@@ -3758,7 +3919,11 @@ void module_free(AsmModule *m)
 void binary_free(Binary *bin)
 {
     free(bin->bytes);
+    free(bin->fix);
     bin->bytes = NULL;
     bin->len = 0;
     bin->cap = 0;
+    bin->fix = NULL;
+    bin->nfix = 0;
+    bin->capfix = 0;
 }

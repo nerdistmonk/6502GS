@@ -1,0 +1,6 @@
+ TYP $B3
+ TYP $06
+ DSK LU
+ ORG $800
+ ASM f.s
+ SNA

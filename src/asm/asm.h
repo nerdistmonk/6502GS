@@ -8,15 +8,44 @@
 #define ASM_LINE_MAX 1024
 #define ASM_NAME_MAX 63
 
+/* How a value relates to the address it is linked at. CONST never moves;
+ * LOCAL moves with its own segment; EXT moves with the named external label.
+ * BAD marks a combination the object format cannot express. */
+typedef enum {
+    REL_CONST,
+    REL_LOCAL,
+    REL_EXT,
+    REL_BAD
+} RelKind;
+
+/* A location in the body that the linker must patch. `size` bytes at
+ * `offset` hold (value >> shift) for a LOCAL target, or the placeholder for
+ * an EXT target. */
+typedef struct {
+    size_t offset;
+    int32_t value;
+    int size;
+    int shift;
+    bool external;
+    char name[ASM_NAME_MAX + 1];
+} Fixup;
+
 typedef struct {
     int32_t value;
     bool defined;
+    RelKind kind;
+    /* The external label name when kind is REL_EXT. */
+    char ext[ASM_NAME_MAX + 1];
 } ExprValue;
 
 typedef struct {
-    bool (*lookup)(void *ctx, const char *name, int32_t *value);
+    /* Fills value, kind, and ext for a name it knows; returns false if the
+     * name is undefined. */
+    bool (*lookup)(void *ctx, const char *name, ExprValue *value);
     void *ctx;
     int32_t pc;
+    /* True in relocatable (REL) mode, where * is a LOCAL value. */
+    bool rel;
 } ExprEnv;
 
 /* Evaluates an expression left to right (no precedence). On a syntax error
@@ -66,6 +95,11 @@ typedef struct {
     uint8_t file_type;
     /* True once a TYP has set file_type. */
     bool typed;
+    /* True when the source began with REL, so output is a relocatable module. */
+    bool rel;
+    Fixup *fix;
+    size_t nfix;
+    size_t capfix;
 } Binary;
 
 /* Two passes over the source. Diagnostics go to stderr. PUT and USE files are
@@ -97,11 +131,13 @@ typedef struct {
     size_t nimports;
 } AsmModule;
 
-/* Assembles one link module that starts at start_pc. EXT names take their
- * values from globals, and an EXT name with no global is an error when used.
- * Errors print to stderr only when print_errors is true. */
+/* Assembles one link module that starts at start_pc. With force_rel (OMF
+ * links) the module is REL from the start and lays out from 0. EXT names take
+ * their values from globals, and an EXT name with no global is an error when
+ * used. Errors print to stderr only when print_errors is true. */
 bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc,
-    const AsmName *globals, size_t nglobals, bool print_errors, AsmModule *out);
+    bool force_rel, const AsmName *globals, size_t nglobals, bool print_errors,
+    AsmModule *out);
 void module_free(AsmModule *m);
 
 #endif

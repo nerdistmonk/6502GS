@@ -21,7 +21,8 @@ add_executable(asm816
     src/asm/fileinfo.c
     src/asm/link.c
     src/asm/listing.c
-    src/asm/opcodes.c)
+    src/asm/opcodes.c
+    src/asm/omf.c)
 target_include_directories(asm816 PRIVATE src/asm)
 target_compile_definitions(asm816 PRIVATE ASM816_VERSION="${PROJECT_VERSION}")
 

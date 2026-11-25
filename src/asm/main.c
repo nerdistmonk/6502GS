@@ -1,9 +1,11 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "asm.h"
 #include "fileinfo.h"
 #include "link.h"
+#include "omf.h"
 
 #define PATH_BUF 256
 
@@ -57,7 +59,7 @@ static bool output_stem(const char *path, char *stem, size_t cap)
     return true;
 }
 
-static int write_binary(const char *name, const Binary *bin)
+static int write_bytes(const char *name, const uint8_t *data, size_t len)
 {
     FILE *out = fopen(name, "wb");
 
@@ -65,11 +67,52 @@ static int write_binary(const char *name, const Binary *bin)
         perror(name);
         return 1;
     }
-    if ((bin->len > 0 && fwrite(bin->bytes, 1, bin->len, out) != bin->len) || fclose(out) != 0) {
+    if ((len > 0 && fwrite(data, 1, len, out) != len) || fclose(out) != 0) {
         fprintf(stderr, "asm816: cannot write %s\n", name);
         return 1;
     }
     return 0;
+}
+
+/* Writes a standalone REL module as one OMF segment named by its DSK name. */
+static int write_omf(const char *name, const Binary *bin)
+{
+    OmfReloc *rel = malloc((bin->nfix ? bin->nfix : 1) * sizeof *rel);
+    OmfSegment seg;
+    uint8_t *out = NULL;
+    size_t outlen = 0;
+    const char *err;
+    size_t i;
+    int rc = 1;
+
+    if (rel == NULL) {
+        fprintf(stderr, "asm816: out of memory\n");
+        return 1;
+    }
+    for (i = 0; i < bin->nfix; i++) {
+        rel[i].offset = bin->fix[i].offset;
+        rel[i].size = bin->fix[i].size;
+        rel[i].shift = bin->fix[i].shift;
+        rel[i].external = false;
+        rel[i].seg = 0;
+        rel[i].total = bin->fix[i].value;
+    }
+    seg.segnum = 1;
+    seg.body = bin->bytes;
+    seg.body_len = bin->len;
+    seg.rel = rel;
+    seg.nrel = bin->nfix;
+    seg.name = name;
+
+    err = omf_build(&seg, 1, &out, &outlen);
+    if (err != NULL) {
+        fprintf(stderr, "asm816: %s\n", err);
+    } else {
+        rc = write_bytes(name, out, outlen);
+    }
+    free(out);
+    free(rel);
+    return rc;
 }
 
 /* Merges the output file's entry into _FileInformation.txt, as link mode
@@ -130,11 +173,24 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    name = bin.out_name[0] != '\0' ? bin.out_name : stem;
-
-    if (write_binary(name, &bin) != 0) {
-        binary_free(&bin);
-        return 1;
+    if (bin.rel) {
+        if (bin.out_name[0] == '\0') {
+            /* Merlin reports this case, writes no file, and exits 0. */
+            fprintf(stderr, "Error : Can't create OMF file ''.\n");
+            binary_free(&bin);
+            return 0;
+        }
+        name = bin.out_name;
+        if (write_omf(name, &bin) != 0) {
+            binary_free(&bin);
+            return 1;
+        }
+    } else {
+        name = bin.out_name[0] != '\0' ? bin.out_name : stem;
+        if (write_bytes(name, bin.bytes, bin.len) != 0) {
+            binary_free(&bin);
+            return 1;
+        }
     }
     if (write_file_info(name, bin.file_type) != 0) {
         binary_free(&bin);

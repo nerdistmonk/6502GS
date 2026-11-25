@@ -1,0 +1,3 @@
+ JSR LOC
+LOC NOP
+ RTS

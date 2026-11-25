@@ -24,7 +24,6 @@ In scope (Phase 1-4):
 
 Deferred (later phases):
 
-- OMF v2.1 object output and a linker.
 - Disk image creation.
 
 Not in scope:
@@ -51,8 +50,8 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `d2d4ec2` (`claude_tools` helpers). Phases 0–4 are
-  done. Phase 5 (OMF, REL, linker) is not started and needs a go-ahead.
+- Latest commit on `main`: `e88e411` (Phase 5 stage 1). Phases 0–4 are done.
+  Phase 5 stage 2 (OMF output, REL, OMF linking) is implemented and awaiting commit.
 - Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
   Oracle tests need `-DMERLIN32_BIN=/root/merlin32/Source/merlin32
   -DMERLIN32_LIB=/root/merlin32/Library`.
@@ -89,7 +88,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] 65C816 opcodes, long addressing (`>` prefix, `JML`/`JSL`), `[dp]`, `[dp],Y`, stack-relative, block moves, `BRL`/`PER`, `REP`/`SEP` immediate width
 - [x] `MX` directive (`%00`–`%11` or `0`–`3`; width follows source order, including across branches, as merlin32 does)
 - [x] `XC` accepted as a no-op; merlin32 accepts 65C02 opcodes without it, and `XC OFF` is also accepted
-- [ ] Directives: `REL` (deferred to Phase 5: merlin writes an OMF object file, so it needs OMF output)
+- [x] Directives: `REL` (writes an OMF v2.1 object file in Phase 5)
 - [x] Directives: `ADR`, `ADRL`, `DUM`/`DEND`
 - [x] Oracle tests for 65C816 programs (`m816_opcodes`, `m816_mx`, `adr_directives`, `dum_dend`)
 
@@ -154,8 +153,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ### Phase 5 (later): OMF and linking
 
-- [ ] OMF v2.1 object output
-- [~] Linker and link scripts: stage 1 done (flat binary from merlin32 link files, with EXT/ENT across modules); stage 2 (OMF object files, REL) not started
+- [x] OMF v2.1 object output (standalone `REL` modules; byte-identical to merlin32)
+- [x] Linker and link scripts: stage 1 flat binary, stage 2 OMF v2.1 output with EXT/ENT across modules. The last `TYP` line picks flat (`$06`) or OMF (any other value, including none). Link rules and divergences are in `docs/USER_GUIDE.md`.
 
 ## References
 

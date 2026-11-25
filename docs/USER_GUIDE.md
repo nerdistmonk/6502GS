@@ -4,9 +4,9 @@ asm816 is a cross-assembler for the Apple II family (6502, 65C02, 65C816)
 that reads Merlin 8/16/16+ source. It is a clean-room clone of merlin32 and
 aims to produce the same bytes, listings, and error messages.
 
-This guide covers the assembler (Phases 1-4) and flat-binary linking (Phase 5,
-stage 1). OMF object output and the REL directive are not yet implemented. Disk
-image creation is deferred. The Merlin editor and Sweet 16 mode are out of scope.
+This guide covers the assembler (Phases 1-4), the `REL` directive, OMF v2.1
+object output, and linking (Phase 5). Disk image creation is deferred. The Merlin
+editor and Sweet 16 mode are out of scope.
 
 ## Building
 
@@ -170,13 +170,15 @@ asm816 [-m <macro_dir>] links.lk
 
 Link files use merlin32's commands:
 
-- `TYP $06` must come first. It is the only type supported.
+- `TYP n` sets the output type. The last `TYP` in the file decides the mode for
+  the whole link. `TYP $06` gives flat binaries. Any other value, or no `TYP`,
+  gives OMF v2.1 output. With no `TYP` the OMF type is `$B3`.
 - `DSK name` starts a new output file.
-- `ORG addr` sets the origin. A file with more than one `ORG` uses the last one
-  for all of its modules.
-- `ASM file.s` assembles a module at the current origin. Each module starts
-  where the previous one ended.
-- `SNA` ends the segment.
+- `ORG addr` sets the origin. A flat `DSK` needs an `ORG`. An OMF link must not
+  have one.
+- `ASM file.s` adds a module. It starts at the `ORG` in effect when it is read,
+  plus the bytes earlier modules placed in the same output.
+- `SNA` ends the segment. `SNA` needs an earlier `ASM` in the file.
 
 ```
  TYP $06
@@ -187,9 +189,22 @@ Link files use merlin32's commands:
  SNA
 ```
 
-Each `DSK` writes a flat binary named after it and updates
+Each `DSK` writes one output file named after it and updates
 `_FileInformation.txt`. A repeated `DSK` name overwrites the earlier file. Labels
 exported with `ENT` can be imported by other modules with `EXT`.
+
+For a flat link, each `DSK` writes a flat binary. Modules assembled before the
+first `DSK` produce no output, but their labels can still be imported. A `REL`
+module in a flat link is placed at its `ORG` like any other module, so its labels
+carry the segment address.
+
+For an OMF link, the one `DSK` names the output file. Each module becomes its
+own segment, in link order, with `EXT` and `ENT` resolved at link time. An OMF
+link can have at most one `DSK`, and it needs one when it has modules.
+
+A flat link with no `DSK` writes one flat file per module at `$8000`. Each file is
+named after its source with the last extension removed (`foo.bar.s` gives
+`foo.bar`). If two modules share a name, the later one overwrites the other.
 
 Differences from merlin32 in link mode:
 
@@ -206,6 +221,11 @@ Differences from merlin32 in link mode:
   merlin32 also writes `error_output.txt`, which asm816 does not.
 - **`-v`.** The symbol-table listing is not available in link mode and is an
   error.
+- **Addends.** merlin32 drops a `+n` addend from the target field of OMF
+  relocation records. asm816 keeps it.
+- **Empty OMF link.** An OMF link with no `DSK` and no `ASM` writes nothing and
+  exits 0. merlin32 truncates the link file to zero bytes.
+- **REL with ORG.** A standalone `REL` file accepts `ORG`, as merlin32 does.
 
 ## Differences from merlin32
 

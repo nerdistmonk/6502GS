@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "asm.h"
@@ -102,9 +103,13 @@ static bool parse_name(Parser *ps, ExprValue *v)
     ps->p = p;
 
     v->value = 0;
-    v->defined = ps->env->lookup(ps->env->ctx, name, &v->value);
+    v->kind = REL_CONST;
+    v->ext[0] = '\0';
+    v->defined = ps->env->lookup(ps->env->ctx, name, v);
     if (!v->defined) {
         v->value = 0;
+        v->kind = REL_CONST;
+        v->ext[0] = '\0';
     }
     return true;
 }
@@ -121,6 +126,8 @@ static bool parse_primary(Parser *ps, ExprValue *v)
     case '*':
         v->value = ps->env->pc;
         v->defined = true;
+        v->kind = ps->env->rel ? REL_LOCAL : REL_CONST;
+        v->ext[0] = '\0';
         ps->p++;
         break;
     case '$':
@@ -153,8 +160,50 @@ static bool parse_primary(Parser *ps, ExprValue *v)
     }
     if (negate) {
         v->value = -v->value;
+        if (v->kind != REL_CONST) {
+            v->kind = REL_BAD;
+        }
     }
     return true;
+}
+
+/* Relocation kind of acc OP rhs. Only the sums and differences that the
+ * object format can express keep a relocatable kind; the rest are BAD. */
+static void combine_rel(char op, ExprValue *acc, const ExprValue *rhs)
+{
+    RelKind a = acc->kind;
+    RelKind b = rhs->kind;
+    RelKind r = REL_BAD;
+    const char *from = NULL;
+
+    if (a == REL_CONST && b == REL_CONST) {
+        r = REL_CONST;
+    } else if (a == REL_BAD || b == REL_BAD) {
+        r = REL_BAD;
+    } else if (op == '+') {
+        if (b == REL_CONST) {
+            r = a;
+            from = acc->ext;
+        } else if (a == REL_CONST) {
+            r = b;
+            from = rhs->ext;
+        }
+    } else if (op == '-') {
+        if (b == REL_CONST) {
+            r = a;
+            from = acc->ext;
+        } else if (a == REL_LOCAL && b == REL_LOCAL) {
+            r = REL_CONST;
+        } else if (a == REL_EXT && b == REL_EXT && strcmp(acc->ext, rhs->ext) == 0) {
+            r = REL_CONST;
+        }
+    }
+    if (r == REL_EXT && from != NULL && from != acc->ext) {
+        snprintf(acc->ext, sizeof acc->ext, "%s", from);
+    } else if (r != REL_EXT) {
+        acc->ext[0] = '\0';
+    }
+    acc->kind = r;
 }
 
 static bool apply_op(Parser *ps, char op, ExprValue *acc, ExprValue rhs)
@@ -192,6 +241,7 @@ static bool apply_op(Parser *ps, char op, ExprValue *acc, ExprValue rhs)
     default:
         return set_err(ps, "unknown operator");
     }
+    combine_rel(op, acc, &rhs);
     acc->value = (int32_t)r;
     acc->defined = defined;
     return true;
@@ -200,7 +250,7 @@ static bool apply_op(Parser *ps, char op, ExprValue *acc, ExprValue rhs)
 bool expr_eval(const char *text, const ExprEnv *env, ExprValue *out, const char **err)
 {
     Parser ps = { text, env, NULL };
-    ExprValue acc = { 0, false };
+    ExprValue acc = { 0, false, REL_CONST, "" };
     ExprValue rhs;
     bool ok = parse_primary(&ps, &acc);
 

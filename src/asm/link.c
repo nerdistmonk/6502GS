@@ -7,17 +7,21 @@
 #include "fileinfo.h"
 #include "line.h"
 #include "link.h"
+#include "omf.h"
 
 /* Layout rounds stop once the exported values stop changing. A module's
  * labels depend on where earlier modules end, so a few rounds are normal. */
 #define MAX_LINK_ROUNDS 32
 #define TYP_FLAT 0x06
+#define TYP_OMF 0xB3
 #define ORG_MAX 0xFFFFFF
+/* A flat module in a link with no DSK is assembled at this origin. */
+#define NODSK_ORIGIN 0x8000
 
 typedef struct {
     char *name;
     char *path;
-    int32_t org;
+    bool has_org;
     size_t first;
     size_t count;
 } Segment;
@@ -25,6 +29,9 @@ typedef struct {
 typedef struct {
     char *shown;
     char *path;
+    /* ORG in effect when the ASM was read. The module starts there plus the
+     * bytes that earlier modules of the same file emitted. */
+    int32_t org;
 } LinkModule;
 
 typedef struct {
@@ -35,6 +42,18 @@ typedef struct {
     LinkModule *mods;
     size_t nmods;
     size_t modcap;
+    /* Modules read before the first DSK. They come first in mods. Their
+     * bytes are not written when a DSK exists. */
+    size_t npre;
+    /* ORG in effect for the next ASM. Reset to 0 at each DSK. */
+    int32_t org;
+    /* An ASM has been read somewhere in the file. merlin32 needs one before any SNA. */
+    bool asm_seen;
+    /* Value of the last TYP in the file, or -1 when there is none. merlin32
+     * decides the output type from that last TYP. */
+    int typ;
+    /* The output is an OMF file: one segment per module, no ORG. */
+    bool omf;
 } Link;
 
 enum { LS_NONE, LS_DSK, LS_ORG, LS_ASM };
@@ -76,6 +95,17 @@ static char *dup_str(const char *s)
 
     if (p != NULL) {
         memcpy(p, s, n);
+    }
+    return p;
+}
+
+static char *dup_strn(const char *s, size_t len)
+{
+    char *p = malloc(len + 1);
+
+    if (p != NULL) {
+        memcpy(p, s, len);
+        p[len] = '\0';
     }
     return p;
 }
@@ -193,7 +223,7 @@ static void free_text_lines(char **lines, size_t n)
     free(lines);
 }
 
-static bool no_symbols(void *ctx, const char *name, int32_t *value)
+static bool no_symbols(void *ctx, const char *name, ExprValue *value)
 {
     (void)ctx;
     (void)name;
@@ -204,7 +234,7 @@ static bool no_symbols(void *ctx, const char *name, int32_t *value)
 /* Evaluates an operand that may use only numbers. */
 static bool const_operand(const char *text, int32_t *value)
 {
-    ExprEnv env = {no_symbols, NULL, 0};
+    ExprEnv env = {no_symbols, NULL, 0, false};
     ExprValue v;
     const char *err = NULL;
 
@@ -225,7 +255,7 @@ static bool add_segment(Link *lk, const SrcLine *ln)
     s = &lk->segs[lk->nsegs];
     s->name = dup_str(ln->operand);
     s->path = s->name != NULL ? join_dir(lk->dir, ln->operand) : NULL;
-    s->org = 0;
+    s->has_org = false;
     s->first = lk->nmods;
     s->count = 0;
     if (s->name == NULL || s->path == NULL) {
@@ -252,32 +282,34 @@ static bool add_module(Link *lk, const SrcLine *ln)
         free(m->path);
         return false;
     }
+    m->org = lk->org;
     lk->nmods++;
-    lk->segs[lk->nsegs - 1].count++;
+    if (lk->nsegs == 0) {
+        lk->npre++;
+    } else {
+        lk->segs[lk->nsegs - 1].count++;
+    }
     return true;
 }
 
 /* Applies one directive to the link state. The normal order is DSK, ORG,
  * one or more ASM, SNA. After an SNA, ORG and ASM continue the previous file,
- * with a warning. TYP $06 must come before the first ORG. */
-static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcLine *ln,
-    int *state, bool *typ_seen)
+ * with a warning. ASM may come before the first DSK; those modules are
+ * assembled but not written. check_mode decides whether ORG is required. */
+static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcLine *ln, int *state)
 {
     const char *op = ln->opcode;
     int32_t v = 0;
 
     if (equal_ci(op, "TYP")) {
-        if (!ln->has_operand || !const_operand(ln->operand, &v)) {
-            return link_fail(lk_path, lineno, "TYP needs a constant");
+        if (!ln->has_operand || !const_operand(ln->operand, &v) || v < 0 || v > 0xFF) {
+            return link_fail(lk_path, lineno, "TYP needs a constant from $00 to $FF");
         }
-        if (v != TYP_FLAT) {
-            return link_fail(lk_path, lineno, "only TYP $06 is supported, OMF links are not implemented yet");
-        }
-        *typ_seen = true;
         return true;
     }
     if (equal_ci(op, "DSK")) {
-        if (*state != LS_NONE) {
+        /* Before the first DSK, merlin32 accepts an ASM with no SNA. */
+        if (*state != LS_NONE && lk->nsegs > 0) {
             return link_fail(lk_path, lineno, "DSK must follow the SNA of the previous segment");
         }
         if (!ln->has_operand) {
@@ -286,15 +318,13 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
         if (!add_segment(lk, ln)) {
             return link_fail(lk_path, lineno, "out of memory");
         }
+        lk->org = 0;
         *state = LS_DSK;
         return true;
     }
     if (equal_ci(op, "ORG")) {
-        if (*state != LS_DSK && (*state != LS_NONE || lk->nsegs == 0)) {
+        if (lk->nsegs == 0) {
             return link_fail(lk_path, lineno, "ORG must follow DSK");
-        }
-        if (!*typ_seen) {
-            return link_fail(lk_path, lineno, "TYP $06 must precede the first ORG");
         }
         if (!ln->has_operand || !const_operand(ln->operand, &v) || v < 0 || v > ORG_MAX) {
             return link_fail(lk_path, lineno, "ORG needs a constant address");
@@ -302,29 +332,28 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
         if (*state == LS_NONE) {
             link_warn(lineno, "ORG has no DSK, it continues the previous file");
         }
-        lk->segs[lk->nsegs - 1].org = v;
+        lk->segs[lk->nsegs - 1].has_org = true;
+        lk->org = v;
         *state = LS_ORG;
         return true;
     }
     if (equal_ci(op, "ASM")) {
-        if (*state == LS_DSK || (*state == LS_NONE && lk->nsegs == 0)) {
-            return link_fail(lk_path, lineno, "ASM must follow ORG");
-        }
         if (!ln->has_operand) {
             return link_fail(lk_path, lineno, "ASM needs a file name");
         }
-        if (*state == LS_NONE) {
+        if (*state == LS_NONE && lk->nsegs > 0) {
             link_warn(lineno, "ASM has no ORG, it continues at the previous module's end");
         }
         if (!add_module(lk, ln)) {
             return link_fail(lk_path, lineno, "out of memory");
         }
+        lk->asm_seen = true;
         *state = LS_ASM;
         return true;
     }
     if (equal_ci(op, "SNA")) {
-        if (*state != LS_ASM) {
-            return link_fail(lk_path, lineno, "SNA must follow ASM");
+        if (!lk->asm_seen) {
+            return link_fail(lk_path, lineno, "SNA needs a previous ASM");
         }
         *state = LS_NONE;
         return true;
@@ -337,13 +366,66 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
     }
 }
 
+/* Returns the value of the last TYP in the file, or -1 when there is none.
+ * merlin32 decides the output type from the whole file, so this is checked
+ * before any directive is applied. */
+static int last_typ(char **lines, size_t n)
+{
+    size_t i;
+    int last = -1;
+
+    for (i = 0; i < n; i++) {
+        SrcLine ln;
+        const char *err = NULL;
+        int32_t v = 0;
+
+        if (parse_line(lines[i], &ln, &err) && ln.has_opcode && equal_ci(ln.opcode, "TYP") &&
+            ln.has_operand && const_operand(ln.operand, &v) && v >= 0 && v <= 0xFF) {
+            last = (int)v;
+        }
+    }
+    return last;
+}
+
+/* Picks the output type once the whole file is read. A file with TYP $06
+ * and no other TYP is flat: every DSK needs an ORG. Anything else is OMF: one
+ * DSK, and no ORG. */
+static bool check_mode(Link *lk, const char *lk_path)
+{
+    size_t s;
+
+    if (lk->typ == TYP_FLAT) {
+        for (s = 0; s < lk->nsegs; s++) {
+            if (!lk->segs[s].has_org) {
+                char msg[64];
+
+                snprintf(msg, sizeof msg, "Directive ORG is missing for File #%lu", (unsigned long)(s + 1));
+                return link_fail(lk_path, 0, msg);
+            }
+        }
+        return true;
+    }
+    lk->omf = true;
+    if (lk->nsegs == 0 && lk->nmods > 0) {
+        return link_fail(lk_path, 0, "Directive DSK is missing (Target OMF File name)");
+    }
+    if (lk->nsegs > 1) {
+        return link_fail(lk_path, 0, "Too many DSK directives (only one for an OMF File)");
+    }
+    for (s = 0; s < lk->nsegs; s++) {
+        if (lk->segs[s].has_org) {
+            return link_fail(lk_path, 0, "Directive ORG is not allowed (Target is a Relocatable OMF File)");
+        }
+    }
+    return true;
+}
+
 static bool parse_link(const char *lk_path, Link *lk)
 {
     char **lines = NULL;
     size_t nlines = 0;
     size_t i;
     bool too_long = false;
-    bool typ_seen = false;
     int state = LS_NONE;
     bool ok = true;
 
@@ -354,6 +436,7 @@ static bool parse_link(const char *lk_path, Link *lk)
     if (too_long) {
         ok = link_fail(lk_path, 0, "a line is longer than 1024 characters");
     }
+    lk->typ = last_typ(lines, nlines);
     for (i = 0; ok && i < nlines; i++) {
         SrcLine ln;
         const char *err = NULL;
@@ -364,13 +447,14 @@ static bool parse_link(const char *lk_path, Link *lk)
         } else if (ln.has_label) {
             ok = link_fail(lk_path, lineno, "a label is not allowed in a link file");
         } else if (ln.has_opcode) {
-            ok = link_directive(lk, lk_path, lineno, &ln, &state, &typ_seen);
+            ok = link_directive(lk, lk_path, lineno, &ln, &state);
         }
     }
     if (ok) {
-        if (state == LS_DSK) {
-            ok = link_fail(lk_path, 0, "the last DSK has no ORG");
-        } else if (state == LS_ORG) {
+        ok = check_mode(lk, lk_path);
+    }
+    if (ok) {
+        if (state == LS_ORG) {
             link_warn(0, "the last ORG has no ASM and is ignored");
         } else if (state == LS_ASM) {
             link_warn(0, "the last segment has no SNA");
@@ -379,6 +463,7 @@ static bool parse_link(const char *lk_path, Link *lk)
     free_text_lines(lines, nlines);
     return ok;
 }
+
 
 static bool check_sources(const Link *lk)
 {
@@ -396,25 +481,45 @@ static bool check_sources(const Link *lk)
     return true;
 }
 
+/* Assembles one module at start. A link with no DSK has no output file to
+ * place it in, so the start is NODSK_ORIGIN for those modules. */
+static bool assemble_one(const Link *lk, size_t k, int32_t start, const char *macro_dir,
+    const AsmName *globals, size_t nglobals, bool print, AsmModule *res)
+{
+    if (!assemble_module(lk->mods[k].path, macro_dir, start, lk->omf, globals, nglobals, print, &res[k])) {
+        return false;
+    }
+    if (print && (start & 0xFFFF) + (int32_t)res[k].bin.len > 0x10000) {
+        fprintf(stderr, "     => Error : Object code size > 64 KB (file '%s').\n", lk->mods[k].shown);
+        return false;
+    }
+    return true;
+}
+
 static bool assemble_all(const Link *lk, const char *macro_dir, const AsmName *globals,
     size_t nglobals, bool print, AsmModule *res)
 {
     size_t s;
+    size_t k;
+    int32_t pre_start = lk->nsegs == 0 ? NODSK_ORIGIN : 0;
 
+    for (k = 0; k < lk->npre; k++) {
+        if (!assemble_one(lk, k, pre_start, macro_dir, globals, nglobals, print, res)) {
+            return false;
+        }
+    }
     for (s = 0; s < lk->nsegs; s++) {
         const Segment *seg = &lk->segs[s];
-        int32_t pc = seg->org;
-        size_t k;
+        int32_t emitted = 0;
 
         for (k = seg->first; k < seg->first + seg->count; k++) {
-            if (!assemble_module(lk->mods[k].path, macro_dir, pc, globals, nglobals, print, &res[k])) {
+            /* Each OMF module is its own segment, laid out from 0. */
+            int32_t start = lk->omf ? 0 : lk->mods[k].org + emitted;
+
+            if (!assemble_one(lk, k, start, macro_dir, globals, nglobals, print, res)) {
                 return false;
             }
-            if (print && (pc & 0xFFFF) + (int32_t)res[k].bin.len > 0x10000) {
-                fprintf(stderr, "     => Error : Object code size > 64 KB (file '%s').\n", lk->mods[k].shown);
-                return false;
-            }
-            pc += (int32_t)res[k].bin.len;
+            emitted += (int32_t)res[k].bin.len;
         }
     }
     return true;
@@ -628,12 +733,196 @@ static bool write_segments(const Link *lk, const AsmModule *res)
     return true;
 }
 
-/* The file type is the last TYP set in link order, starting from the link file's $06. */
+/* merlin32 names a no-DSK module's file after its source name without the
+ * last extension. A leading dot is not an extension. */
+static char *module_out_name(const char *shown)
+{
+    const char *base = strrchr(shown, '/');
+    const char *dot;
+
+    base = base != NULL ? base + 1 : shown;
+    dot = strrchr(base, '.');
+    if (dot == NULL || dot == base) {
+        return dup_str(shown);
+    }
+    return dup_strn(shown, (size_t)(dot - shown));
+}
+
+/* With no DSK, each flat module is written to its own file. A duplicate name
+ * is overwritten, so the last module wins. */
+static bool write_module_files(const Link *lk, const AsmModule *res)
+{
+    size_t k;
+
+    for (k = 0; k < lk->nmods; k++) {
+        char *name = module_out_name(lk->mods[k].shown);
+        char *path = name != NULL ? join_dir(lk->dir, name) : NULL;
+        const Binary *b = &res[k].bin;
+        FILE *f;
+        bool ok;
+
+        if (name == NULL || path == NULL) {
+            free(name);
+            free(path);
+            fprintf(stderr, "out of memory\n");
+            return false;
+        }
+        f = fopen(path, "wb");
+        ok = f != NULL && (b->len == 0 || fwrite(b->bytes, 1, b->len, f) == b->len);
+        if (f != NULL && fclose(f) != 0) {
+            ok = false;
+        }
+        if (!ok) {
+            fprintf(stderr, "asm816: cannot write %s\n", name);
+            free(name);
+            free(path);
+            return false;
+        }
+        printf("     => Creating Object file '%s'\n", name);
+        free(name);
+        free(path);
+    }
+    return true;
+}
+
+/* Finds the first module in link order that exports name and sets *mod to
+ * its index. */
+static bool find_provider(const Link *lk, const AsmModule *res, const char *name, size_t *mod)
+{
+    size_t k;
+    size_t j;
+
+    for (k = 0; k < lk->nmods; k++) {
+        for (j = 0; j < res[k].nexports; j++) {
+            if (strcmp(res[k].exports[j].name, name) == 0) {
+                *mod = k;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/* Writes the OMF link: one segment per module, numbered in link order. The
+ * module at index k is SEGNUM k+1, and a fixup that names an external label
+ * refers to the provider's segment. */
+static bool write_omf_link(const Link *lk, const AsmModule *res)
+{
+    OmfSegment *segs = NULL;
+    OmfReloc **rels = NULL;
+    uint8_t *out = NULL;
+    size_t outlen = 0;
+    const char *err = NULL;
+    FILE *f;
+    size_t k;
+    size_t i;
+    bool ok = false;
+
+    if (lk->nsegs == 0) {
+        return true;
+    }
+    if (lk->nmods == 0) {
+        f = fopen(lk->segs[0].path, "wb");
+        if (f == NULL || fclose(f) != 0) {
+            fprintf(stderr, "asm816: cannot write %s\n", lk->segs[0].name);
+            return false;
+        }
+        printf("     => Creating OMF file '%s'\n", lk->segs[0].name);
+        return true;
+    }
+    segs = calloc(lk->nmods, sizeof *segs);
+    rels = calloc(lk->nmods, sizeof *rels);
+    if (segs == NULL || rels == NULL) {
+        fprintf(stderr, "out of memory\n");
+        goto out;
+    }
+    for (k = 0; k < lk->nmods; k++) {
+        const Binary *b = &res[k].bin;
+
+        rels[k] = malloc((b->nfix > 0 ? b->nfix : 1) * sizeof **rels);
+        if (rels[k] == NULL) {
+            fprintf(stderr, "out of memory\n");
+            goto out;
+        }
+        for (i = 0; i < b->nfix; i++) {
+            const Fixup *fx = &b->fix[i];
+            OmfReloc *r = &rels[k][i];
+
+            r->offset = fx->offset;
+            r->size = fx->size;
+            r->shift = fx->shift;
+            r->external = fx->external;
+            r->seg = 0;
+            r->total = fx->value;
+            if (fx->external) {
+                size_t p;
+
+                /* A link assembles an EXT operand with the provider's offset
+                 * already added, so fx->value is the full target. */
+                if (!find_provider(lk, res, fx->name, &p)) {
+                    fprintf(stderr, "asm816: no provider for external '%s'\n", fx->name);
+                    goto out;
+                }
+                r->seg = (int)p + 1;
+            }
+        }
+        segs[k].segnum = (int)k + 1;
+        segs[k].body = b->bytes;
+        segs[k].body_len = b->len;
+        segs[k].rel = rels[k];
+        segs[k].nrel = b->nfix;
+        segs[k].name = NULL;
+    }
+    err = omf_build(segs, lk->nmods, &out, &outlen);
+    if (err != NULL) {
+        fprintf(stderr, "asm816: %s\n", err);
+        goto out;
+    }
+    f = fopen(lk->segs[0].path, "wb");
+    if (f == NULL) {
+        perror(lk->segs[0].name);
+        goto out;
+    }
+    if (fwrite(out, 1, outlen, f) != outlen || fclose(f) != 0) {
+        fprintf(stderr, "asm816: cannot write %s\n", lk->segs[0].name);
+        goto out;
+    }
+    printf("     => Creating OMF file '%s'\n", lk->segs[0].name);
+    ok = true;
+
+out:
+    if (rels != NULL) {
+        for (k = 0; k < lk->nmods; k++) {
+            free(rels[k]);
+        }
+    }
+    free(rels);
+    free(segs);
+    free(out);
+    return ok;
+}
+
+static bool write_outputs(const Link *lk, const AsmModule *res)
+{
+    if (lk->omf) {
+        return write_omf_link(lk, res);
+    }
+    if (lk->nsegs == 0) {
+        return write_module_files(lk, res);
+    }
+    return write_segments(lk, res);
+}
+
+/* An OMF link takes its file type from the link file's last TYP, or $B3 when
+ * there is none. A flat link takes the last typed module's type, starting from $06. */
 static uint8_t link_file_type(const Link *lk, const AsmModule *res)
 {
     uint8_t t = TYP_FLAT;
     size_t k;
 
+    if (lk->omf) {
+        return lk->typ >= 0 ? (uint8_t)lk->typ : TYP_OMF;
+    }
     for (k = 0; k < lk->nmods; k++) {
         if (res[k].bin.typed) {
             t = res[k].bin.file_type;
@@ -642,30 +931,55 @@ static uint8_t link_file_type(const Link *lk, const AsmModule *res)
     return t;
 }
 
+
 static bool write_file_info_for(const Link *lk, const AsmModule *res)
 {
-    const char **names = malloc((lk->nsegs > 0 ? lk->nsegs : 1) * sizeof *names);
-    char *info_path = join_dir(lk->dir, "_FileInformation.txt");
-    size_t n = 0;
-    size_t s;
-    bool ok;
+    /* With no DSK, the names are the module files. Otherwise they are the DSK names. */
+    bool per_module = lk->nsegs == 0;
+    size_t count = per_module ? lk->nmods : lk->nsegs;
+    const char **names;
+    char **owned;
+    char *info_path;
+    size_t i;
+    bool ok = false;
 
-    if (names == NULL || info_path == NULL) {
-        free(names);
-        free(info_path);
-        return false;
+    if (count == 0) {
+        return true;
     }
-    for (s = 0; s < lk->nsegs; s++) {
-        names[n++] = lk->segs[s].name;
+    names = malloc(count * sizeof *names);
+    owned = calloc(count, sizeof *owned);
+    info_path = join_dir(lk->dir, "_FileInformation.txt");
+    if (names == NULL || owned == NULL || info_path == NULL) {
+        goto out;
     }
-    ok = file_info_upsert(info_path, names, n, link_file_type(lk, res));
+    for (i = 0; i < count; i++) {
+        if (per_module) {
+            owned[i] = module_out_name(lk->mods[i].shown);
+            if (owned[i] == NULL) {
+                goto out;
+            }
+            names[i] = owned[i];
+        } else {
+            names[i] = lk->segs[i].name;
+        }
+    }
+    ok = file_info_upsert(info_path, names, count, link_file_type(lk, res));
     if (!ok) {
         fprintf(stderr, "asm816: cannot write _FileInformation.txt\n");
     }
+
+out:
+    if (owned != NULL) {
+        for (i = 0; i < count; i++) {
+            free(owned[i]);
+        }
+    }
+    free(owned);
     free(names);
     free(info_path);
     return ok;
 }
+
 
 static void link_free(Link *lk)
 {
@@ -736,7 +1050,7 @@ int link_run(const char *path, const char *macro_dir)
     if (!check_export_clashes(&lk, res) || !check_imports(&lk, res, globals, ng)) {
         goto out;
     }
-    if (!write_segments(&lk, res) || !write_file_info_for(&lk, res)) {
+    if (!write_outputs(&lk, res) || !write_file_info_for(&lk, res)) {
         goto out;
     }
     rc = 0;
