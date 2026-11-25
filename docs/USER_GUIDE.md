@@ -185,12 +185,14 @@ Link files use merlin32's commands:
   the whole link. `TYP $06` gives flat binaries. Any other value, or no `TYP`,
   gives OMF v2.1 output. With no `TYP` the OMF type is `$B3`.
 - `DSK name` starts a new output file.
-- `ORG addr` sets the origin. A flat `DSK` needs an `ORG` somewhere in its
-  segment. An OMF link must not have one.
+- `ORG addr` sets the origin. A bare `ORG` sets it to `$0000`. A flat `DSK` needs an
+  `ORG` somewhere in its segment. An OMF link must not have one. A label on a link
+  line is ignored.
 - `ASM file.s` adds a module. The segment's origin is its last `ORG`, so every
   module in the segment starts there, plus the bytes earlier modules placed in
   the same output. This includes modules read before that `ORG`.
-- `SNA` ends the segment. `SNA` needs an earlier `ASM` in the file.
+- `SNA` ends the segment. `SNA` needs an earlier `ASM` in the file. A `DSK` may
+  follow a segment that has no `SNA`. The earlier segment is still written.
 
 ```
  TYP $06

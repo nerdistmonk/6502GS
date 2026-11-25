@@ -55,12 +55,15 @@ bytes and listing.
 ## Resume here
 
 - Latest commit on `main`: the one titled "Match merlin32 no-DSK output names"
-  (`git log -1`). It follows `a762134` (flat segment base). Uncommitted: none.
-  Phases 0–5 (flat and OMF linking, standalone REL) are done. `ctest` passes
-  68/68 on GCC Debug and ASan/UBSan.
-- Next step: the remaining unverified merlin32 comparisons under Open
-  questions. Probe each one black-box, record the result here or in the guide,
-  then tick it off. Ask the user before any behavior change.
+  (`git log -1`). Uncommitted, all matching merlin32 and each with a
+  `tests/oracle/link_cases` case: `DSK` after an open segment is accepted
+  (`dsk_after_open`), link-line labels are ignored (`label_ignored`), and a bare
+  `ORG` sets `$0000` (`bare_org`). Error precedence was decided: keep first-error
+  reporting. Phases 0–5 (flat and OMF linking, standalone REL) are done. `ctest`
+  passes 71/71 on GCC Debug and ASan/UBSan.
+- Next step: the 3+ file output type check under Open questions. Probe it
+  black-box, record the result here or in the guide, then tick it off. Ask the
+  user before any behavior change.
 - Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
   Oracle tests need `-DMERLIN32_BIN=/root/merlin32/Source/merlin32
   -DMERLIN32_LIB=/root/merlin32/Library`.
@@ -186,9 +189,11 @@ Unverified against merlin32 (black-box probes still needed):
 
 - [x] Flat link: segment base. Probed 18 variants. merlin32 uses the segment's last `ORG` as the base for all its modules, including those read before it. The first probe matched our old rule, but the two-ORG probe did not, so we now match merlin (`tests/oracle/link_cases/flat_last_org`). A flat `DSK` with no `ORG` anywhere is an error.
 - [x] No-DSK link output names. Probed black-box: merlin32 takes the basename, then strips from the last dot. `sub/x.s` gives `x` in the link directory. A leading-dot name (`.s`) is empty. merlin32 reports "Can't create Object file ''", skips it, and exits 0. `_FileInformation.txt` lists only the files written (`link_cases/no_dsk_path_names`, `link_cases/no_dsk_dot_name`).
-- [ ] Merlin's error precedence when several link errors occur in one link file.
+- [x] Merlin's error precedence when several link errors occur in one link file. Exit code is 1 in every probe, so only the message differs. Decided: keep asm816's first-error reporting. merlin32 checks some whole-file rules first, and labels a misordered directive "Unknown (or misordered)".
+- [x] Link-file labels: merlin32 accepts a label on a link line and ignores it (same bytes, exit 0). asm816 now matches (`link_cases/label_ignored`).
+- [x] Bare `ORG` (no operand): merlin32 sets the origin to `$0000`, even after an earlier `ORG`. asm816 now matches (`link_cases/bare_org`).
 - [ ] Output type in no-DSK links: the link-wide rule (last `TYP` applies to every output) was probed with two files only.
-- [ ] `DSK` after an open segment (`ASM`, no `SNA`, then `DSK`). It is an error, carried over from stage 1 and not re-probed in stage 2.
+- [x] `DSK` after an open segment (`ASM`, no `SNA`, then `DSK`), and after an `ORG` with no `ASM`. merlin32 accepts both and writes every segment. asm816 now matches (`link_cases/dsk_after_open`).
 
 Deferred:
 

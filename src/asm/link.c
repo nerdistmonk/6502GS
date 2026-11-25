@@ -307,10 +307,7 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
         return true;
     }
     if (equal_ci(op, "DSK")) {
-        /* Before the first DSK, merlin32 accepts an ASM with no SNA. */
-        if (*state != LS_NONE && lk->nsegs > 0) {
-            return link_fail(lk_path, lineno, "DSK must follow the SNA of the previous segment");
-        }
+        /* merlin32 accepts a DSK even when the previous segment has no SNA. */
         if (!ln->has_operand) {
             return link_fail(lk_path, lineno, "DSK needs a file name");
         }
@@ -324,7 +321,10 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
         if (lk->nsegs == 0) {
             return link_fail(lk_path, lineno, "ORG must follow DSK");
         }
-        if (!ln->has_operand || !const_operand(ln->operand, &v) || v < 0 || v > ORG_MAX) {
+        /* A bare ORG sets the origin to $0000, as merlin32 does. */
+        if (!ln->has_operand) {
+            v = 0;
+        } else if (!const_operand(ln->operand, &v) || v < 0 || v > ORG_MAX) {
             return link_fail(lk_path, lineno, "ORG needs a constant address");
         }
         if (*state == LS_NONE) {
@@ -442,8 +442,6 @@ static bool parse_link(const char *lk_path, Link *lk)
 
         if (!parse_line(lines[i], &ln, &err)) {
             ok = link_fail(lk_path, lineno, err);
-        } else if (ln.has_label) {
-            ok = link_fail(lk_path, lineno, "a label is not allowed in a link file");
         } else if (ln.has_opcode) {
             ok = link_directive(lk, lk_path, lineno, &ln, &state);
         }

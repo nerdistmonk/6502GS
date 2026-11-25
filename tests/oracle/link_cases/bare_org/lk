@@ -1,0 +1,6 @@
+ TYP $06
+ DSK a
+ ORG $8000
+ ORG
+ ASM x.s
+ SNA
