@@ -22,6 +22,10 @@ typedef struct {
     char *name;
     char *path;
     bool has_org;
+    /* Last ORG in the segment. Every module of the segment starts there plus
+     * the bytes that earlier modules of the segment emitted. merlin32 does the
+     * same for modules read before the ORG. */
+    int32_t org;
     size_t first;
     size_t count;
 } Segment;
@@ -29,9 +33,6 @@ typedef struct {
 typedef struct {
     char *shown;
     char *path;
-    /* ORG in effect when the ASM was read. The module starts there plus the
-     * bytes that earlier modules of the same file emitted. */
-    int32_t org;
 } LinkModule;
 
 typedef struct {
@@ -45,8 +46,6 @@ typedef struct {
     /* Modules read before the first DSK. They come first in mods. Their
      * bytes are not written when a DSK exists. */
     size_t npre;
-    /* ORG in effect for the next ASM. Reset to 0 at each DSK. */
-    int32_t org;
     /* An ASM has been read somewhere in the file. merlin32 needs one before any SNA. */
     bool asm_seen;
     /* Value of the last TYP in the file, or -1 when there is none. merlin32
@@ -256,6 +255,7 @@ static bool add_segment(Link *lk, const SrcLine *ln)
     s->name = dup_str(ln->operand);
     s->path = s->name != NULL ? join_dir(lk->dir, ln->operand) : NULL;
     s->has_org = false;
+    s->org = 0;
     s->first = lk->nmods;
     s->count = 0;
     if (s->name == NULL || s->path == NULL) {
@@ -282,7 +282,6 @@ static bool add_module(Link *lk, const SrcLine *ln)
         free(m->path);
         return false;
     }
-    m->org = lk->org;
     lk->nmods++;
     if (lk->nsegs == 0) {
         lk->npre++;
@@ -318,7 +317,6 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
         if (!add_segment(lk, ln)) {
             return link_fail(lk_path, lineno, "out of memory");
         }
-        lk->org = 0;
         *state = LS_DSK;
         return true;
     }
@@ -333,7 +331,7 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
             link_warn(lineno, "ORG has no DSK, it continues the previous file");
         }
         lk->segs[lk->nsegs - 1].has_org = true;
-        lk->org = v;
+        lk->segs[lk->nsegs - 1].org = v;
         *state = LS_ORG;
         return true;
     }
@@ -514,7 +512,7 @@ static bool assemble_all(const Link *lk, const char *macro_dir, const AsmName *g
 
         for (k = seg->first; k < seg->first + seg->count; k++) {
             /* Each OMF module is its own segment, laid out from 0. */
-            int32_t start = lk->omf ? 0 : lk->mods[k].org + emitted;
+            int32_t start = lk->omf ? 0 : seg->org + emitted;
 
             if (!assemble_one(lk, k, start, macro_dir, globals, nglobals, print, res)) {
                 return false;

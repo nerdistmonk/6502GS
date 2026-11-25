@@ -54,12 +54,13 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `823324d` (ENT/EXT docs and open items). Working
-  tree is clean. Phases 0–5 (flat and OMF linking, standalone REL) are done,
-  and `ctest` passes 65/65 on GCC Debug and ASan/UBSan.
-- Next step: the unverified merlin32 comparisons under Open questions. Probe
-  each one black-box, record the result here or in the guide, then tick it off.
-  Ask the user before any behavior change.
+- Latest commit on `main`: `8e44c1c`. Uncommitted: the flat segment base fix
+  (`src/asm/link.c`), its regression case `tests/oracle/link_cases/flat_last_org`,
+  and the doc updates. Phases 0–5 (flat and OMF linking, standalone REL) are done,
+  and `ctest` passes 66/66 on GCC Debug and ASan/UBSan.
+- Next step: the four remaining unverified merlin32 comparisons under Open
+  questions. Probe each one black-box, record the result here or in the guide,
+  then tick it off. Ask the user before any behavior change.
 - Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
   Oracle tests need `-DMERLIN32_BIN=/root/merlin32/Source/merlin32
   -DMERLIN32_LIB=/root/merlin32/Library`.
@@ -183,7 +184,7 @@ All paths are relative to the reference library at `/root/iigs-workspace/Referen
 
 Unverified against merlin32 (black-box probes still needed):
 
-- [ ] Flat link: the base of a segment whose first module has no `ORG`. We assume 0.
+- [x] Flat link: segment base. Probed 18 variants. merlin32 uses the segment's last `ORG` as the base for all its modules, including those read before it. The first probe matched our old rule, but the two-ORG probe did not, so we now match merlin (`tests/oracle/link_cases/flat_last_org`). A flat `DSK` with no `ORG` anywhere is an error.
 - [ ] No-DSK link output names for paths with directories (`sub/x.s`) and leading-dot names (`.x`). Current names are a guess.
 - [ ] Merlin's error precedence when several link errors occur in one link file.
 - [ ] Output type in no-DSK links: the link-wide rule (last `TYP` applies to every output) was probed with two files only.
