@@ -1791,6 +1791,12 @@ static bool is_conditional(const char *name)
         || strcmp(name, "ELSE") == 0 || strcmp(name, "FIN") == 0;
 }
 
+static bool listing_control(const char *name)
+{
+    return strcmp(name, "LST") == 0 || strcmp(name, "PAG") == 0
+        || strcmp(name, "TR") == 0 || strcmp(name, "EXP") == 0;
+}
+
 static bool directive_known(const char *name)
 {
     static const char *const names[] = {
@@ -3166,6 +3172,10 @@ static void assemble_statement(Asm *a, const char *text)
                 a->lst_zero = a->dummy && dum_zero_op(name);
                 if (strcmp(name, "END") == 0) {
                     a->lst_vis = LV_SKIP;
+                } else if ((a->nframes > 1 || a->lup_open) && listing_control(name)) {
+                    /* merlin32 hides a listing control inside a macro or LUP
+                     * expansion, but the hidden row still takes a line number. */
+                    a->lst_vis = LV_COUNT;
                 }
                 pseudo_op(a, name, &ln);
             }

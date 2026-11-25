@@ -164,6 +164,12 @@ asm816 matches merlin32 for the behaviors above. Known differences:
   prints a warning to stderr, which merlin32 does not. Use `STA >$E10000` for
   the 24-bit form. Values above `$FFFFFF` are errors, except in the `JML [abs]`,
   `JMP [abs]`, and `JMP (abs)` forms, which truncate like the other 16-bit forms.
+- **Bracket and paren prefixes.** The `<` and `>` prefixes inside `[ ]` and
+  `( )` are accepted and rejected as in merlin32. `(>dp),Y`, `(>dp,X)`,
+  `(abs,X)` with any prefix, `JML [<abs]`, and `[abs],Y` are errors.
+- **Register suffix on `JML`/`JMP` brackets.** merlin32 assembles
+  `JML [$1234,X]` as `JML [$1234]` and drops the index. asm816 rejects `,X`,
+  `,Y`, and `,S` here so the index is not lost silently.
 - **Accept/reject.** Some inputs merlin32 accepts are rejected here, including
   bare `DB` and long labels.
 - **Multiple errors.** merlin32 can print several errors in one run. asm816
@@ -185,8 +191,10 @@ asm816 matches merlin32 for the behaviors above. Known differences:
 - **Known merlin32 bug, not reproduced.** After `DO 0` / `DO 0` / `ELSE`,
   merlin32 sizes the next immediate operand as 8-bit even under `MX %00`.
   asm816 sizes it correctly.
-- **Not yet produced.** `LST OFF` suppression and `PAG` form feeds are
-  accepted but do not change the listing.
+- **Listing controls inside expansions.** `LST`, `PAG`, `TR`, and `EXP` rows
+  inside a macro expansion or a `LUP` body are hidden, as in merlin32. Their
+  line numbers are still consumed. Outside expansions these rows are shown.
+  `PAG` writes no form feeds in either tool.
 - **Not yet probed.** Absolute `PUT`/`USE` paths, an unterminated `MAC` at
   end of file, and `STR` over 255 bytes (which is diagnosed).
 

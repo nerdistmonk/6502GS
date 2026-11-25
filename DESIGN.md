@@ -107,7 +107,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - `KBD` sets its label to the current PC when no key is read (merlin's behavior with no input). The prompt operand is ignored.
   - Not yet probed: `STR` over 255 bytes (we diagnose it), and whether `KBD` with a label-less line errors in merlin (we diagnose it).
 - [x] Listing controls: `LST`, `PAG`, `TR`, `EXP` accepted; `ERR expr` fails the build when the value is nonzero or undefined, checked after both passes as merlin32 does
-  - Listing format (`-v`) is matched in Phase 4. `LST OFF` suppression and `PAG` form feeds are not yet produced.
+  - Listing format (`-v`) is matched in Phase 4, including control-row hiding inside expansions.
 
 ### Phase 4: Output and completeness
 
@@ -118,7 +118,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Divergence: merlin orders label-based equates (`X1+k`) by an unexplained key. We sort all equates by value, with definition order on ties. Oracle cases use constant equates only.
   - Variables (`]x`) are left out. Local labels print as `_name`.
 - [x] Full listing parity for the oracle test suite (`-v` writes `<stem>_Output.txt`, named after the DSK/SAV target)
-  - All 27 oracle listings match merlin32.
+  - All 28 oracle listings match merlin32 (`run_oracle.sh` compares them).
+  - `LST`, `PAG`, `TR`, and `EXP` rows are hidden inside macro expansions and `LUP` bodies, and their line numbers are still consumed. Outside expansions they show, and PUT-file rows show. Merlin32 writes no `PAG` form feeds, so we write none either. Covered by `tests/oracle/cases/listing_expansion.s`.
   - Label numbering is two-phase, as merlin32 does. Phase A: each macro expansion, in source order, takes numbers for its MAC-body labels (nested expansions included). Phase B: after all phase A numbers, LUP `@` labels and macro labels inside LUP bodies are numbered per iteration in body order.
   - The first layout run uses a high phase B base so its names cannot collide with later runs. Symbols persist across runs, so names must stay stable.
   - Divergence: an ORG inside a DUM block lists its address as `$FFFF`, as merlin32 does. The assembled PC is unchanged.
