@@ -95,17 +95,18 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] Macros: `MAC`, `EOM`, `]0` (argument count) and positional `]1`..`]8` arguments; `NAME args` and `PMC NAME`; body labels become `ozunid_N` per expansion, as merlin32 does; `:` local names in a macro expansion's operand are an error, as in merlin32
 - [x] `PUT` / `USE` includes (expanded at load time, before macros, LUP, and conditionals)
   - `PUT` resolves relative to the source file's directory. `USE` also falls back to the macro library (`asm816 -m <dir>`). Merlin's default library path is not used.
-  - Filename rule: no `.` and length ≥3 gets `.s` appended; otherwise the name is used as written. No deduplication.
+  - Filename rule: the last path component with no `.` and a whole name of length ≥3 gets `.s` appended; otherwise the name is used as written. Absolute paths open directly. No deduplication.
   - A file found via the macro library keeps only its `MAC`…`EOM` blocks.
   - Nested `PUT`/`USE` inside an included file is a silent no-op, as in merlin32. A bare `PUT`/`USE` is silent.
   - A `PUT` inside a skipped `DO` still opens its file and errors if it is missing.
   - Listing line numbers after include expansion match merlin32 (oracle case `include`).
-  - Not yet probed: absolute paths, and an unterminated `MAC` at end of file.
+  - Absolute paths work, with or without `.s`, as in merlin32 (oracle case `put_absolute`). An unterminated `MAC` at end of file is silent and its body is not assembled, as in merlin32.
 - [x] Macro terminator: `EOM` or `<<<` (merlin's `Macros.s` uses `<<<`)
 - [x] Text directives: `ASC`, `DCI`, `STR`, `FLS`, `REV`, `INV`, `KBD`
   - Merlin differs from the manual, and merlin wins: `DCI` inverts the high bit of the last byte even when a hex suffix follows; `STR`'s length byte counts the hex suffix; `INV` and `FLS` mask the hex suffix too; `FLS` accepts only `$20`-`$5F` string characters; `REV` rejects a hex suffix.
   - `KBD` sets its label to the current PC when no key is read (merlin's behavior with no input). The prompt operand is ignored.
-  - Not yet probed: `STR` over 255 bytes (we diagnose it), and whether `KBD` with a label-less line errors in merlin (we diagnose it).
+  - `STR` over 255 bytes is diagnosed in both tools, with different wording. The object bytes for 255 bytes match merlin32.
+  - Not yet probed: whether `KBD` with a label-less line errors in merlin (we diagnose it).
 - [x] Listing controls: `LST`, `PAG`, `TR`, `EXP` accepted; `ERR expr` fails the build when the value is nonzero or undefined, checked after both passes as merlin32 does
   - Listing format (`-v`) is matched in Phase 4, including control-row hiding inside expansions.
 

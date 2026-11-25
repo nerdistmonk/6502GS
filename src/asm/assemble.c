@@ -2060,14 +2060,16 @@ static bool load_source(Asm *a, char ***lines, size_t *nlines, bool *ends_nl)
     return read_lines(a, f, lines, nlines, ends_nl);
 }
 
-/* Name PUT and USE open: three or more characters with no '.' get ".s";
- * anything else is used as written. */
+/* Name PUT and USE open: three or more characters with no '.' in the last
+ * path component get ".s"; anything else is used as written. */
 static bool include_name(const char *operand, char *out, size_t cap)
 {
     size_t n = strlen(operand);
+    const char *base = strrchr(operand, '/');
     int len;
 
-    if (n >= 3 && strchr(operand, '.') == NULL) {
+    base = base ? base + 1 : operand;
+    if (n >= 3 && strchr(base, '.') == NULL) {
         len = snprintf(out, cap, "%s.s", operand);
     } else {
         len = snprintf(out, cap, "%s", operand);
@@ -2174,10 +2176,12 @@ static bool include_file(Asm *a, const char *operand, bool use, Source *out)
         return true;
     }
     if (include_name(operand, name, sizeof name)) {
-        if (dir_of(a->path, dir, sizeof dir)) {
+        if (name[0] == '/') {
+            f = fopen(name, "r");
+        } else if (dir_of(a->path, dir, sizeof dir)) {
             f = open_in_dir(dir, name);
         }
-        if (f == NULL && use && a->macro_dir != NULL) {
+        if (f == NULL && use && a->macro_dir != NULL && name[0] != '/') {
             f = open_in_dir(a->macro_dir, name);
             macro_only = f != NULL;
         }

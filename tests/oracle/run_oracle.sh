@@ -7,7 +7,8 @@
 # Contract: asm816 is invoked as `asm816 -v -m <lib> <stem>.s` in a scratch
 # directory. Like merlin32, it names the binary after the first SAV or DSK
 # (else <stem>) and writes _FileInformation.txt beside it. The listing is
-# <out>_Output.txt, named after the binary as merlin32 names it.
+# <out>_Output.txt, named after the binary as merlin32 names it. A case may
+# write @WORK@ where the scratch directory's absolute path belongs.
 set -eu
 
 asm816=$1
@@ -19,7 +20,7 @@ stem=$(basename "$src" .s)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-cp "$src" "$work/$stem.s"
+sed "s|@WORK@|$work|g" "$src" > "$work/$stem.s"
 cp -r "$(dirname "$0")/fixtures/." "$work/"
 
 (cd "$work" && "$merlin" -v "$lib" "$stem.s" >/dev/null)

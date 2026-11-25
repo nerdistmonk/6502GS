@@ -148,9 +148,11 @@ NAME    MAC
 loops, and conditionals.
 
 - `PUT` resolves relative to the directory of the file that contains it.
+  Absolute paths open directly, as in merlin32.
 - `USE` searches the same place, then the macro library (`-m`). A file found
   in the library keeps only its `MAC`…`EOM` blocks.
-- A file name with no `.` and at least 3 characters gets `.s` appended.
+- A name with at least 3 characters and no `.` in its last path component gets
+  `.s` appended.
 - Nested `PUT` and `USE` inside an included file do nothing, as in merlin32.
 - A `PUT` inside a skipped `DO` still opens its file and errors if the file is
   missing.
@@ -195,8 +197,8 @@ asm816 matches merlin32 for the behaviors above. Known differences:
   inside a macro expansion or a `LUP` body are hidden, as in merlin32. Their
   line numbers are still consumed. Outside expansions these rows are shown.
   `PAG` writes no form feeds in either tool.
-- **Not yet probed.** Absolute `PUT`/`USE` paths, an unterminated `MAC` at
-  end of file, and `STR` over 255 bytes (which is diagnosed).
+- **Not yet probed.** Whether `KBD` with a label-less line errors in
+  merlin32 (we diagnose it). Absolute `PUT`/`USE` paths now match merlin32.
 
 ## Testing
 
