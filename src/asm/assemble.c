@@ -1258,6 +1258,25 @@ static void mx_directive(Asm *a, const SrcLine *ln)
     a->idx16 = !(v & 1);
 }
 
+static void err_directive(Asm *a, const SrcLine *ln)
+{
+    int32_t v = 0;
+    bool defined = false;
+
+    if (a->pass != 2) {
+        return;
+    }
+    if (!ln->has_operand) {
+        diag(a, "ERR needs an expression");
+    } else if (eval_operand(a, ln->operand, &v, &defined)) {
+        if (!defined) {
+            diag(a, "ERR expression is undefined");
+        } else if (v != 0) {
+            diag(a, "ERR expression is nonzero");
+        }
+    }
+}
+
 static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
 {
     if (strcmp(name, "ORG") == 0) {
@@ -1296,6 +1315,11 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         mx_directive(a, ln);
     } else if (strcmp(name, "LONGA") == 0 || strcmp(name, "LONGI") == 0) {
         /* merlin32 accepts these and ignores them; they do not change width. */
+    } else if (strcmp(name, "LST") == 0 || strcmp(name, "PAG") == 0
+        || strcmp(name, "TR") == 0 || strcmp(name, "EXP") == 0) {
+        /* Listing controls. They change only merlin32's listing, not the binary. */
+    } else if (strcmp(name, "ERR") == 0) {
+        err_directive(a, ln);
     } else {
         diag(a, "unknown opcode or directive: %s", name);
     }
@@ -1337,7 +1361,8 @@ static bool directive_known(const char *name)
 {
     static const char *const names[] = {
         "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "STR", "INV", "FLS", "REV",
-        "ADR", "ADRL", "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "EQU", "=", "KBD",
+        "ADR", "ADRL", "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "LST", "PAG", "TR", "EXP",
+        "ERR", "EQU", "=", "KBD",
         "DO", "IF", "ELSE", "FIN",
     };
     size_t i;

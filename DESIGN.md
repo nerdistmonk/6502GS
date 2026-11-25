@@ -101,7 +101,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Merlin differs from the manual, and merlin wins: `DCI` inverts the high bit of the last byte even when a hex suffix follows; `STR`'s length byte counts the hex suffix; `INV` and `FLS` mask the hex suffix too; `FLS` accepts only `$20`-`$5F` string characters; `REV` rejects a hex suffix.
   - `KBD` sets its label to the current PC when no key is read (merlin's behavior with no input). The prompt operand is ignored.
   - Not yet probed: `STR` over 255 bytes (we diagnose it), and whether `KBD` with a label-less line errors in merlin (we diagnose it).
-- [ ] Listing controls: `LST`, `PAG`, `TR`, `EXP`, `ERR`
+- [x] Listing controls: `LST`, `PAG`, `TR`, `EXP` accepted (no effect on the binary; listing format not matched yet); `ERR expr` fails the build when the value is nonzero or undefined, checked after both passes as merlin32 does
+  - Merlin's listing output (`LST OFF` suppression, `PAG` form feeds, `EXP` macro expansion lines) is not yet produced. The oracle compares binaries only.
 
 ### Phase 4: Output and completeness
 
