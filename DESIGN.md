@@ -54,11 +54,11 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `8e44c1c`. Uncommitted: the flat segment base fix
-  (`src/asm/link.c`), its regression case `tests/oracle/link_cases/flat_last_org`,
-  and the doc updates. Phases 0–5 (flat and OMF linking, standalone REL) are done,
-  and `ctest` passes 66/66 on GCC Debug and ASan/UBSan.
-- Next step: the four remaining unverified merlin32 comparisons under Open
+- Latest commit on `main`: the one titled "Match merlin32 no-DSK output names"
+  (`git log -1`). It follows `a762134` (flat segment base). Uncommitted: none.
+  Phases 0–5 (flat and OMF linking, standalone REL) are done. `ctest` passes
+  68/68 on GCC Debug and ASan/UBSan.
+- Next step: the remaining unverified merlin32 comparisons under Open
   questions. Probe each one black-box, record the result here or in the guide,
   then tick it off. Ask the user before any behavior change.
 - Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
@@ -185,7 +185,7 @@ All paths are relative to the reference library at `/root/iigs-workspace/Referen
 Unverified against merlin32 (black-box probes still needed):
 
 - [x] Flat link: segment base. Probed 18 variants. merlin32 uses the segment's last `ORG` as the base for all its modules, including those read before it. The first probe matched our old rule, but the two-ORG probe did not, so we now match merlin (`tests/oracle/link_cases/flat_last_org`). A flat `DSK` with no `ORG` anywhere is an error.
-- [ ] No-DSK link output names for paths with directories (`sub/x.s`) and leading-dot names (`.x`). Current names are a guess.
+- [x] No-DSK link output names. Probed black-box: merlin32 takes the basename, then strips from the last dot. `sub/x.s` gives `x` in the link directory. A leading-dot name (`.s`) is empty. merlin32 reports "Can't create Object file ''", skips it, and exits 0. `_FileInformation.txt` lists only the files written (`link_cases/no_dsk_path_names`, `link_cases/no_dsk_dot_name`).
 - [ ] Merlin's error precedence when several link errors occur in one link file.
 - [ ] Output type in no-DSK links: the link-wide rule (last `TYP` applies to every output) was probed with two files only.
 - [ ] `DSK` after an open segment (`ASM`, no `SNA`, then `DSK`). It is an error, carried over from stage 1 and not re-probed in stage 2.

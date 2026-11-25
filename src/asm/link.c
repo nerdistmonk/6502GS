@@ -731,8 +731,9 @@ static bool write_segments(const Link *lk, const AsmModule *res)
     return true;
 }
 
-/* merlin32 names a no-DSK module's file after its source name without the
- * last extension. A leading dot is not an extension. */
+/* merlin32 names a no-DSK module's file after the basename of its source,
+ * without the text from the last dot. A leading dot counts, so ".s" gives an
+ * empty name, which merlin32 cannot create. */
 static char *module_out_name(const char *shown)
 {
     const char *base = strrchr(shown, '/');
@@ -740,10 +741,10 @@ static char *module_out_name(const char *shown)
 
     base = base != NULL ? base + 1 : shown;
     dot = strrchr(base, '.');
-    if (dot == NULL || dot == base) {
-        return dup_str(shown);
+    if (dot == NULL) {
+        return dup_str(base);
     }
-    return dup_strn(shown, (size_t)(dot - shown));
+    return dup_strn(base, (size_t)(dot - base));
 }
 
 /* With no DSK, each flat module is written to its own file. A duplicate name
@@ -764,6 +765,12 @@ static bool write_module_files(const Link *lk, const AsmModule *res)
             free(path);
             fprintf(stderr, "out of memory\n");
             return false;
+        }
+        if (name[0] == '\0') {
+            fprintf(stderr, "asm816: Can't create Object file ''\n");
+            free(name);
+            free(path);
+            continue;
         }
         f = fopen(path, "wb");
         ok = f != NULL && (b->len == 0 || fwrite(b->bytes, 1, b->len, f) == b->len);
@@ -929,7 +936,6 @@ static uint8_t link_file_type(const Link *lk, const AsmModule *res)
     return t;
 }
 
-
 static bool write_file_info_for(const Link *lk, const AsmModule *res)
 {
     /* With no DSK, the names are the module files. Otherwise they are the DSK names. */
@@ -939,6 +945,7 @@ static bool write_file_info_for(const Link *lk, const AsmModule *res)
     char **owned;
     char *info_path;
     size_t i;
+    size_t n = 0;
     bool ok = false;
 
     if (count == 0) {
@@ -956,12 +963,19 @@ static bool write_file_info_for(const Link *lk, const AsmModule *res)
             if (owned[i] == NULL) {
                 goto out;
             }
-            names[i] = owned[i];
+            if (owned[i][0] == '\0') {
+                continue;
+            }
+            names[n++] = owned[i];
         } else {
-            names[i] = lk->segs[i].name;
+            names[n++] = lk->segs[i].name;
         }
     }
-    ok = file_info_upsert(info_path, names, count, link_file_type(lk, res));
+    if (n == 0) {
+        ok = true;
+        goto out;
+    }
+    ok = file_info_upsert(info_path, names, n, link_file_type(lk, res));
     if (!ok) {
         fprintf(stderr, "asm816: cannot write _FileInformation.txt\n");
     }

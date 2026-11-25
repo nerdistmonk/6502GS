@@ -17,8 +17,8 @@ src=$4
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/m" "$work/o"
-cp "$src"/* "$work/m/"
-cp "$src"/* "$work/o/"
+cp -R "$src"/. "$work/m/"
+cp -R "$src"/. "$work/o/"
 
 set +e
 (cd "$work/m" && "$merlin" "$lib" lk >"$work/merlin.out" 2>&1 </dev/null)

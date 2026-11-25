@@ -215,8 +215,12 @@ own segment, in link order, with `EXT` and `ENT` resolved at link time. An OMF
 link can have at most one `DSK`, and it needs one when it has modules.
 
 A flat link with no `DSK` writes one flat file per module at `$8000`. Each file is
-named after its source with the last extension removed (`foo.bar.s` gives
-`foo.bar`). If two modules share a name, the later one overwrites the other.
+named after the basename of its source, with the text from the last dot removed
+(`foo.bar.s` gives `foo.bar`, and `sub/x.s` gives `x`). The file is written to
+the link file's directory. If two modules share a name, the later one overwrites
+the other. A source whose name starts with a dot (`.s`) has an empty name. asm816
+reports an error for it, skips that module, and keeps going, with exit code 0 as
+merlin32 does.
 
 Differences from merlin32 in link mode:
 
