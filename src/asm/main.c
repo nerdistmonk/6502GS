@@ -2,6 +2,8 @@
 #include <string.h>
 
 #include "asm.h"
+#include "fileinfo.h"
+#include "link.h"
 
 #define PATH_BUF 256
 
@@ -70,22 +72,11 @@ static int write_binary(const char *name, const Binary *bin)
     return 0;
 }
 
-/* Writes merlin32's _FileInformation.txt entry for the output file. The
- * folder and version fields are fixed, as merlin32 writes them. */
+/* Merges the output file's entry into _FileInformation.txt, as link mode
+ * does, so other entries already in the file are kept. */
 static int write_file_info(const char *name, uint8_t file_type)
 {
-    static const char folder[] = "000000000000000000000000000000000000";
-    FILE *out = fopen("_FileInformation.txt", "w");
-
-    if (out == NULL) {
-        perror("_FileInformation.txt");
-        return 1;
-    }
-    fprintf(out,
-        "%s=Type(%02X),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3),"
-        "FolderInfo1(%s),FolderInfo2(%s)",
-        name, file_type, folder, folder);
-    if (fclose(out) != 0) {
+    if (!file_info_upsert("_FileInformation.txt", &name, 1, file_type)) {
         fprintf(stderr, "asm816: cannot write _FileInformation.txt\n");
         return 1;
     }
@@ -124,6 +115,13 @@ int main(int argc, char **argv)
     }
     src = argv[argc - 1];
 
+    if (is_link_file(src)) {
+        if (verbose) {
+            fprintf(stderr, "asm816: -v listings are not supported for link files\n");
+            return 1;
+        }
+        return link_run(src, macro_dir);
+    }
     if (!output_stem(src, stem, sizeof stem)) {
         fprintf(stderr, "asm816: cannot derive output name from %s\n", src);
         return 1;

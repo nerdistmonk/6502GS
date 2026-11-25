@@ -64,6 +64,8 @@ typedef struct {
     char out_name[ASM_LINE_MAX];
     /* ProDOS file type from the last TYP. */
     uint8_t file_type;
+    /* True once a TYP has set file_type. */
+    bool typed;
 } Binary;
 
 /* Two passes over the source. Diagnostics go to stderr. PUT and USE files are

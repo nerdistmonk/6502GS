@@ -30,4 +30,13 @@ if(MERLIN32_BIN)
             COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_errors.sh
                 $<TARGET_FILE:asm816> ${MERLIN32_BIN} ${MERLIN32_LIB} ${case_file})
     endforeach()
+
+    file(GLOB LINK_CASES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/oracle/link_cases/*/lk)
+    foreach(link_file IN LISTS LINK_CASES)
+        get_filename_component(case_dir ${link_file} DIRECTORY)
+        get_filename_component(case_name ${case_dir} NAME)
+        add_test(NAME oracle_link_${case_name}
+            COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_link.sh
+                $<TARGET_FILE:asm816> ${MERLIN32_BIN} ${MERLIN32_LIB} ${case_dir})
+    endforeach()
 endif()

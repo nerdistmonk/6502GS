@@ -1,0 +1,13 @@
+ TYP $06
+ DSK out
+ ORG $1000
+ ASM p.s
+ SNA
+ DSK out2
+ ORG $2000
+ ASM p.s
+ SNA
+ DSK out
+ ORG $3000
+ ASM p.s
+ SNA

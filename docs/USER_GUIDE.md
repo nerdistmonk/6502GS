@@ -4,9 +4,9 @@ asm816 is a cross-assembler for the Apple II family (6502, 65C02, 65C816)
 that reads Merlin 8/16/16+ source. It is a clean-room clone of merlin32 and
 aims to produce the same bytes, listings, and error messages.
 
-This guide covers the current assembler (Phases 1-4). OMF object output, the
-REL directive, and the linker are not yet implemented. Disk image creation is
-deferred. The Merlin editor and Sweet 16 mode are out of scope.
+This guide covers the assembler (Phases 1-4) and flat-binary linking (Phase 5,
+stage 1). OMF object output and the REL directive are not yet implemented. Disk
+image creation is deferred. The Merlin editor and Sweet 16 mode are out of scope.
 
 ## Building
 
@@ -48,7 +48,9 @@ Each run writes files into the current directory.
   extension (`hello.s` gives `hello`). If `SAV` or `DSK` gives a name, that
   name is used instead. The file has no load-address header.
 - **`_FileInformation.txt`.** Written on every run. It records the output name
-  and file type (from `TYP`) in Merlin's file information format.
+  and file type (from `TYP`) in Merlin's file information format. An existing
+  file keeps its other entries. The entry for this output replaces any old
+  entry for the same name and moves to the end.
 - **`<stem>_Output.txt`.** Written only with `-v` or `-vN`. It holds the
   listing, followed by the symbol tables with `-vN`. The stem follows the
   `SAV`/`DSK` name when one is set.
@@ -157,6 +159,54 @@ loops, and conditionals.
 - A `PUT` inside a skipped `DO` still opens its file and errors if the file is
   missing.
 
+## Linking
+
+A link file is a text file with `ASM` or `SNA` lines. asm816 detects it by
+content, so the same command assembles a link file or a source file:
+
+```
+asm816 [-m <macro_dir>] links.lk
+```
+
+Link files use merlin32's commands:
+
+- `TYP $06` must come first. It is the only type supported.
+- `DSK name` starts a new output file.
+- `ORG addr` sets the origin. A file with more than one `ORG` uses the last one
+  for all of its modules.
+- `ASM file.s` assembles a module at the current origin. Each module starts
+  where the previous one ended.
+- `SNA` ends the segment.
+
+```
+ TYP $06
+ DSK out
+ ORG $1000
+ ASM main.s
+ ASM util.s
+ SNA
+```
+
+Each `DSK` writes a flat binary named after it and updates
+`_FileInformation.txt`. A repeated `DSK` name overwrites the earlier file. Labels
+exported with `ENT` can be imported by other modules with `EXT`.
+
+Differences from merlin32 in link mode:
+
+- **Progress.** merlin32 prints its link log to stdout. asm816 prints progress
+  to stderr only.
+- **Link-file warnings.** These shapes assemble to the same bytes as merlin32,
+  which accepts them silently. asm816 prints `[Warning] Link file` on stderr:
+  an `ORG` after `SNA` with no `DSK`, an `ASM` with no `ORG` before it, an `ORG`
+  at end of file with no `ASM`, and an `ASM` at end of file with no `SNA`.
+- **Export warnings.** `ENT` of an undefined label, an `EXT` whose name is also a
+  local label, and `ENT` with no label each print a `[Warning]`. The `ENT` with no
+  label exports the current PC.
+- **Object size.** A module that runs past `$FFFF` is an error, as in merlin32.
+  merlin32 also writes `error_output.txt`, which asm816 does not.
+- **`-v`.** The symbol-table listing is not available in link mode and is an
+  error.
+
 ## Differences from merlin32
 
 asm816 matches merlin32 for the behaviors above. Known differences:
@@ -206,4 +256,5 @@ asm816 matches merlin32 for the behaviors above. Known differences:
 
 `ctest` runs the test suite. With `-DMERLIN32_BIN`, the oracle scripts in
 `tests/oracle/` compare bytes (`run_oracle.sh`), symbol tables
-(`run_symbols.sh`), and error messages (`run_errors.sh`) against merlin32.
+(`run_symbols.sh`), error messages (`run_errors.sh`), and link output
+(`run_link.sh`, one directory per case in `link_cases/`) against merlin32.

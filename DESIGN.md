@@ -155,11 +155,11 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 ### Phase 5 (later): OMF and linking
 
 - [ ] OMF v2.1 object output
-- [ ] Linker and link scripts
+- [~] Linker and link scripts: stage 1 done (flat binary from merlin32 link files, with EXT/ENT across modules); stage 2 (OMF object files, REL) not started
 
 ## References
 
-All paths are relative to the reference library at `/root/iigs-refs/`.
+All paths are relative to the reference library at `/root/iigs-workspace/Reference_Materials/`.
 
 - Merlin 16+ manual: `Reference Docs - Software/Merlin_816_Macro_Assembler_Manual_text.txt`
   - Addressing modes: p.83

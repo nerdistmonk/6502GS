@@ -1,0 +1,4 @@
+ LDA L
+ JMP L
+ RTS
+L  NOP

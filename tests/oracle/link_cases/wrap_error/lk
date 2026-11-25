@@ -1,0 +1,6 @@
+ TYP $06
+ DSK out
+ ORG $FF00
+ ASM big.s
+ ASM y3.s
+ SNA

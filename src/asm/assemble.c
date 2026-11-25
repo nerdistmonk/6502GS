@@ -32,6 +32,12 @@ typedef struct {
     int oz_def_gen;
     int oz_gen;
     char oz_name[24];
+    /* EXT names: the EXT line, the first label line that redefines the name,
+     * and whether any expression read the name. */
+    bool ext;
+    bool ext_used;
+    int ext_line;
+    int ext_label_line;
 } Symbol;
 
 typedef enum {
@@ -123,6 +129,13 @@ enum err_rank {
 /* Which directive or instruction the current statement is, for undefined-symbol messages. */
 enum err_ctx { CTX_NONE, CTX_INSTR, CTX_ORG, CTX_DS, CTX_DATA, CTX_ERR };
 
+/* A growable list of AsmName records. */
+typedef struct {
+    AsmName *items;
+    size_t n;
+    size_t cap;
+} NameList;
+
 typedef struct {
     const char *path;
     /* Directory searched by USE when a file is not beside the source; may be NULL. */
@@ -143,6 +156,16 @@ typedef struct {
     int32_t pc;
     /* pc at the start of each pass: the default origin, or the link origin for a module. */
     int32_t start_pc;
+    /* Link values for EXT names, and whether warnings are suppressed. */
+    const AsmName *globals;
+    size_t nglobals;
+    bool quiet;
+    /* Count of EXT name reads. An operand that reads one is assembled in its wide form. */
+    size_t ext_refs;
+    /* ENT records from pass 2, then the resolved exports and the used EXT names. */
+    NameList ents;
+    NameList exports;
+    NameList imports;
     int errors;
     bool ended;
     /* Listing rows and their bytes, and the per-line state that builds a row. */
@@ -262,7 +285,7 @@ static void warn(Asm *a, const char *fmt, ...)
     char text[ASM_LINE_MAX + 256];
     va_list ap;
 
-    if (a->pass != 2) {
+    if (a->pass != 2 || a->quiet) {
         return;
     }
     va_start(ap, fmt);
@@ -491,7 +514,7 @@ static bool lookup_sym(void *ctx, const char *name, int32_t *value)
 {
     Asm *a = ctx;
     char key[SYM_KEY_MAX];
-    const Symbol *s;
+    Symbol *s;
 
     /* MX is a value only inside DO/IF operands, as in merlin32. */
     if (a->in_cond && is_mx_token(name)) {
@@ -514,6 +537,10 @@ static bool lookup_sym(void *ctx, const char *name, int32_t *value)
      * earlier passes, which matches merlin32's zero-page choice for them. */
     if (a->pass == 1 && !s->is_equ && s->seen != a->iter) {
         return false;
+    }
+    if (s->ext) {
+        s->ext_used = true;
+        a->ext_refs++;
     }
     *value = s->value;
     return true;
@@ -551,6 +578,16 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
         if (!equ) {
             s->oz_label = true;
             s->oz_def_gen = a->ozgen;
+        }
+        return;
+    }
+    if (s->ext) {
+        /* A label after its EXT line keeps the external value. */
+        if (a->line_no > s->ext_line) {
+            if (s->ext_label_line == 0) {
+                s->ext_label_line = a->line_no;
+            }
+            warn(a, "label '%s' is also declared EXT; the external value is used", name);
         }
         return;
     }
@@ -1339,6 +1376,8 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
 {
     int32_t v = 0;
     bool defined = false;
+    bool ext_ref = false;
+    size_t refs;
     AddrMode small;
     AddrMode wide;
     size_t idx = a->wide_seq++;
@@ -1452,7 +1491,12 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
             diag(a, "branch operand cannot use '<'");
             return false;
         }
+        refs = a->ext_refs;
         if (!eval_operand(a, o->expr, &v, &defined)) {
+            return false;
+        }
+        if (a->ext_refs != refs) {
+            jump_error(a);
             return false;
         }
         if (defined) {
@@ -1475,7 +1519,12 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
             diag(a, "branch operand cannot use a prefix");
             return false;
         }
+        refs = a->ext_refs;
         if (!eval_operand(a, o->expr, &v, &defined)) {
+            return false;
+        }
+        if (a->ext_refs != refs) {
+            jump_error(a);
             return false;
         }
         if (defined) {
@@ -1505,9 +1554,11 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         small = AM_ZP;
         wide = AM_ABS;
     }
+    refs = a->ext_refs;
     if (!eval_operand(a, o->expr, &v, &defined)) {
         return false;
     }
+    ext_ref = a->ext_refs != refs;
     if (o->index == 'S') {
         if (!lookup_mode(a, mnem, AM_SR, &out[0])) {
             return false;
@@ -1551,7 +1602,7 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         return false;
     }
     if (a->pass == 1) {
-        uint8_t w = (!defined || v < 0 || v > 0xFF) ? 1 : 0;
+        uint8_t w = (!defined || ext_ref || v < 0 || v > 0xFF) ? 1 : 0;
 
         if (a->wide[idx] != w) {
             a->changed = true;
@@ -1688,6 +1739,7 @@ static void typ_directive(Asm *a, const SrcLine *ln)
     if (a->pass != 2) {
         return;
     }
+    a->bin->typed = true;
     if (!ln->has_operand) {
         a->bin->file_type = 0;
     } else if (eval(a, ln->operand, &v, &defined)) {
@@ -1711,6 +1763,167 @@ static enum err_ctx directive_ctx(const char *name)
         return CTX_ERR;
     }
     return CTX_NONE;
+}
+
+/* Copies the next comma-separated name from an EXT or ENT operand. The
+ * name must be non-empty and fit in cap; *pp moves past the comma. */
+static bool next_name(const char **pp, char *out, size_t cap)
+{
+    const char *p = *pp;
+    size_t n = 0;
+
+    while (*p != '\0' && *p != ',') {
+        if (n + 1 >= cap) {
+            return false;
+        }
+        out[n++] = *p++;
+    }
+    out[n] = '\0';
+    if (*p == ',') {
+        p++;
+    }
+    *pp = p;
+    return n > 0;
+}
+
+static bool name_list_add(NameList *l, const char *name, int32_t value, int line)
+{
+    AsmName *items;
+
+    if (l->n == l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 16;
+
+        items = realloc(l->items, cap * sizeof *items);
+        if (items == NULL) {
+            return false;
+        }
+        l->items = items;
+        l->cap = cap;
+    }
+    snprintf(l->items[l->n].name, sizeof l->items[l->n].name, "%s", name);
+    l->items[l->n].value = value;
+    l->items[l->n].line = line;
+    l->n++;
+    return true;
+}
+
+/* EXT names a label whose value comes from another module. A name already
+ * defined here as a label becomes external from this line on. */
+static void ext_directive(Asm *a, const SrcLine *ln)
+{
+    const char *p;
+    char name[ASM_NAME_MAX + 1];
+
+    if (!ln->has_operand) {
+        diag(a, "EXT needs a label name");
+        return;
+    }
+    p = ln->operand;
+    while (*p != '\0') {
+        Symbol *s;
+        int32_t value = 0;
+        size_t i;
+
+        if (!next_name(&p, name, sizeof name)) {
+            diag(a, "bad EXT operand '%s'", ln->operand);
+            return;
+        }
+        /* Local labels cannot be external, so a ':' name is ignored. */
+        if (name[0] == ':') {
+            continue;
+        }
+        s = sym_find(a, name);
+        if (s == NULL) {
+            s = sym_add(a, name);
+            if (s == NULL) {
+                diag(a, "out of memory");
+                return;
+            }
+        }
+        if (s->ext) {
+            continue;
+        }
+        for (i = 0; i < a->nglobals; i++) {
+            if (strcmp(a->globals[i].name, name) == 0) {
+                value = a->globals[i].value;
+                break;
+            }
+        }
+        if (!s->defined || s->value != value) {
+            a->changed = true;
+        }
+        s->ext = true;
+        s->ext_line = a->line_no;
+        s->defined = true;
+        s->is_equ = true;
+        s->value = value;
+    }
+}
+
+/* ENT records the module's address for a label. Its value is resolved after
+ * pass 2, once the label's definition is known. */
+static void ent_directive(Asm *a, const SrcLine *ln)
+{
+    const char *p;
+    char name[ASM_NAME_MAX + 1];
+
+    if (a->pass != 2) {
+        return;
+    }
+    if (!ln->has_operand) {
+        diag(a, "ENT needs a label name");
+        return;
+    }
+    p = ln->operand;
+    while (*p != '\0') {
+        if (!next_name(&p, name, sizeof name)) {
+            diag(a, "bad ENT operand '%s'", ln->operand);
+            return;
+        }
+        if (name[0] == ':') {
+            continue;
+        }
+        if (!name_list_add(&a->ents, name, a->pc, a->line_no)) {
+            diag(a, "out of memory");
+            return;
+        }
+    }
+}
+
+/* After pass 2: each ENT becomes an export, and each EXT the module read
+ * becomes an import. */
+static void collect_links(Asm *a)
+{
+    size_t i;
+
+    for (i = 0; i < a->ents.n; i++) {
+        const AsmName *e = &a->ents.items[i];
+        const Symbol *s = sym_find(a, e->name);
+        int32_t value = e->value;
+
+        if (s != NULL && s->ext && s->ext_label_line != 0) {
+            report(a, RANK_DUP_LABEL, "We have found 2 External Labels with the same name '%s' (File '%s', Line %d)",
+                e->name, a->path, s->ext_label_line);
+            return;
+        }
+        if (s != NULL && !s->ext && s->defined) {
+            value = s->value;
+        } else {
+            warn(a, "ENT '%s' has no label in this file; exporting the address of the ENT line", e->name);
+        }
+        if (!name_list_add(&a->exports, e->name, value, e->line)) {
+            diag(a, "out of memory");
+            return;
+        }
+    }
+    for (i = 0; i < a->nsyms; i++) {
+        const Symbol *s = &a->syms[i];
+
+        if (s->ext && s->ext_used && !name_list_add(&a->imports, s->key, 0, s->ext_line)) {
+            diag(a, "out of memory");
+            return;
+        }
+    }
 }
 
 static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
@@ -1761,6 +1974,10 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         err_directive(a, ln);
     } else if (strcmp(name, "SAV") == 0 || strcmp(name, "DSK") == 0) {
         name_directive(a, ln);
+    } else if (strcmp(name, "EXT") == 0) {
+        ext_directive(a, ln);
+    } else if (strcmp(name, "ENT") == 0) {
+        ent_directive(a, ln);
     } else if (strcmp(name, "TYP") == 0) {
         typ_directive(a, ln);
     } else {
@@ -1811,7 +2028,7 @@ static bool directive_known(const char *name)
     static const char *const names[] = {
         "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "STR", "INV", "FLS", "REV",
         "ADR", "ADRL", "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "LST", "PAG", "TR", "EXP",
-        "ERR", "XC", "SAV", "DSK", "TYP", "EQU", "=", "KBD",
+        "ERR", "XC", "SAV", "DSK", "TYP", "EQU", "=", "KBD", "EXT", "ENT",
         "DO", "IF", "ELSE", "FIN",
     };
     size_t i;
@@ -3206,6 +3423,7 @@ static bool run_pass(Asm *a, int pass)
 
     a->pass = pass;
     a->lst_seq = 0;
+    a->ents.n = 0;
     listing_clear(&a->lst);
     a->nfiles = 0;
     a->line_no = 0;
@@ -3369,7 +3587,7 @@ static bool write_symbol_table(FILE *f, const Asm *a, size_t cols)
     for (i = 0; i < a->nsyms; i++) {
         const Symbol *s = &a->syms[i];
 
-        if (s->key[0] != ']' && s->defined) {
+        if (s->key[0] != ']' && s->defined && !s->ext) {
             all[n++] = s;
         }
     }
@@ -3384,6 +3602,58 @@ static bool write_symbol_table(FILE *f, const Asm *a, size_t cols)
     return ferror(f) == 0;
 }
 
+/* Frees everything the assembler owns. Exports and imports must already be
+ * moved out or cleared by the caller. */
+static void asm_free(Asm *a)
+{
+    size_t i;
+
+    free_macros(a);
+    listing_free(&a->lst);
+    for (i = 0; i < a->nsyms; i++) {
+        free(a->syms[i].text);
+    }
+    free(a->syms);
+    free(a->wide);
+    free(a->conds);
+    free(a->frames);
+    free(a->ents.items);
+    free(a->exports.items);
+    free(a->imports.items);
+}
+
+/* Runs the sizing passes, then pass 2 and the link records. *pass2_started
+ * says whether pass 2 ran, which is when a listing is written. */
+static bool assemble_passes(Asm *a, bool *pass2_started)
+{
+    bool ok = true;
+
+    for (a->iter = 1; ok; a->iter++) {
+        a->changed = false;
+        snapshot_vars(a);
+        ok = run_pass(a, 1);
+        if (ok && vars_changed(a)) {
+            a->changed = true;
+        }
+        if (!ok || !a->changed) {
+            break;
+        }
+        if (a->iter == MAX_LAYOUT_PASSES) {
+            fprintf(stderr, "%s: layout does not settle after %d passes\n", a->path, MAX_LAYOUT_PASSES);
+            ok = false;
+        }
+    }
+    *pass2_started = ok;
+    if (!ok) {
+        return false;
+    }
+    ok = run_pass(a, 2);
+    if (ok) {
+        collect_links(a);
+    }
+    return ok && a->errors == 0;
+}
+
 bool assemble_source(const char *path, const char *macro_dir, const char *listing_stem, int table_cols, Binary *out)
 {
     Asm a;
@@ -3391,7 +3661,6 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
     char lst_name[ASM_LINE_MAX + 16];
     bool ok;
     bool pass2_started;
-    size_t i;
 
     memset(&a, 0, sizeof a);
     out->bytes = NULL;
@@ -3399,30 +3668,19 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
     out->cap = 0;
     out->out_name[0] = '\0';
     out->file_type = 0;
+    out->typed = false;
     a.path = path;
     a.macro_dir = macro_dir;
     a.listing = listing_stem != NULL;
     a.bin = out;
     a.start_pc = 0x8000;
 
-    ok = true;
-    for (a.iter = 1; ok; a.iter++) {
-        a.changed = false;
-        snapshot_vars(&a);
-        ok = run_pass(&a, 1);
-        if (ok && vars_changed(&a)) {
-            a.changed = true;
-        }
-        if (!ok || !a.changed) {
-            break;
-        }
-        if (a.iter == MAX_LAYOUT_PASSES) {
-            fprintf(stderr, "%s: layout does not settle after %d passes\n", path, MAX_LAYOUT_PASSES);
-            ok = false;
-        }
+    ok = assemble_passes(&a, &pass2_started);
+    if (ok && a.imports.n > 0) {
+        fprintf(stderr, "     => Error : Can't find External Label named '%s' (File '%s', Line %d).\n",
+            a.imports.items[0].name, path, a.imports.items[0].line);
+        ok = false;
     }
-    pass2_started = ok;
-    ok = ok && run_pass(&a, 2) && a.errors == 0;
     if (a.err_has) {
         fprintf(stderr, "      => [Error] %s\n", a.err_msg);
     }
@@ -3447,20 +3705,55 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
         ok = false;
     }
 
-    free_macros(&a);
-    listing_free(&a.lst);
-    for (i = 0; i < a.nsyms; i++) {
-        free(a.syms[i].text);
-    }
-    free(a.syms);
-    free(a.wide);
-    free(a.conds);
-    free(a.frames);
+    asm_free(&a);
     if (!ok) {
         binary_free(out);
     }
     return ok;
 }
+
+bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, const AsmName *globals, size_t nglobals, bool print_errors, AsmModule *out)
+{
+    Asm a;
+    bool pass2_started;
+    bool ok;
+
+    memset(&a, 0, sizeof a);
+    memset(out, 0, sizeof *out);
+    a.path = path;
+    a.macro_dir = macro_dir;
+    a.bin = &out->bin;
+    a.start_pc = start_pc;
+    a.globals = globals;
+    a.nglobals = nglobals;
+    a.quiet = !print_errors;
+
+    ok = assemble_passes(&a, &pass2_started);
+    if (!ok && a.err_has && print_errors) {
+        fprintf(stderr, "      => [Error] %s\n", a.err_msg);
+    }
+    if (ok) {
+        out->exports = a.exports.items;
+        out->nexports = a.exports.n;
+        a.exports.items = NULL;
+        out->imports = a.imports.items;
+        out->nimports = a.imports.n;
+        a.imports.items = NULL;
+    } else {
+        binary_free(&out->bin);
+    }
+    asm_free(&a);
+    return ok;
+}
+
+void module_free(AsmModule *m)
+{
+    binary_free(&m->bin);
+    free(m->exports);
+    free(m->imports);
+    memset(m, 0, sizeof *m);
+}
+
 
 void binary_free(Binary *bin)
 {

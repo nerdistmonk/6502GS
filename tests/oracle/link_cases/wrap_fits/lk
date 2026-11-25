@@ -1,0 +1,6 @@
+ TYP $06
+ DSK out
+ ORG $FF00
+ ASM b256.s
+ ASM b200.s
+ SNA
