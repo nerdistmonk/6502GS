@@ -177,6 +177,18 @@ All paths are relative to the reference library at `/root/iigs-workspace/Referen
 - Command-line interface: resolved. `asm816` mirrors merlin32's flags (`-m <dir>`, `-v<N>`) and adds `--version`.
 - Merlin's `,X`/`,Y`/`,S` suffix on `JML`/`JMP` bracket operands (see Phase 4): resolved, keep rejecting. Matching it would silently drop the index.
 
+Unverified against merlin32 (black-box probes still needed):
+
+- [ ] Flat link: the base of a segment whose first module has no `ORG`. We assume 0.
+- [ ] No-DSK link output names for paths with directories (`sub/x.s`) and leading-dot names (`.x`). Current names are a guess.
+- [ ] Merlin's error precedence when several link errors occur in one link file.
+- [ ] Output type in no-DSK links: the link-wide rule (last `TYP` applies to every output) was probed with two files only.
+- [ ] `DSK` after an open segment (`ASM`, no `SNA`, then `DSK`). It is an error, carried over from stage 1 and not re-probed in stage 2.
+
+Deferred:
+
+- [ ] Disk image creation (see Scope).
+
 ## Done criteria
 
 The binary is named `asm816`.

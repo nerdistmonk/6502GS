@@ -101,6 +101,7 @@ Merlin's four-column layout: label, opcode, operand, comment.
 | Data and text | `HEX`, `ASC`, `DCI`, `STR`, `FLS`, `REV`, `INV`, `KBD` |
 | Mode | `MX`, `XC` |
 | Output hints | `SAV`, `DSK`, `TYP` |
+| Linking | `ENT`, `EXT` (see Linking) |
 | Listing | `LST`, `PAG`, `TR`, `EXP` (accepted), `ERR` |
 | Control flow | `DO`, `ELSE`, `FIN`, `LUP`, `--^`, `MAC`, `EOM` / `<<<`, `PUT`, `USE` |
 
@@ -108,6 +109,11 @@ Merlin's four-column layout: label, opcode, operand, comment.
 and each address or data field that depends on a label is recorded for the
 linker. The output is an OMF v2.1 object file (see Outputs). `REL` with an `ORG`
 is accepted. The linker uses the module as described in Linking.
+
+`ENT label` exports a label from the module, so other modules can import it.
+`EXT label` declares a label that another module exports. The module can use it
+in expressions, and the linker fills in its value. Export and import rules are
+in Linking.
 
 `ERR expr` fails the build when the value is nonzero or undefined. It is
 checked after both passes.
