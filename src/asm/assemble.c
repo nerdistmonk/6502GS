@@ -1277,6 +1277,48 @@ static void err_directive(Asm *a, const SrcLine *ln)
     }
 }
 
+/* SAV and DSK both name the output file. As in merlin32, the first name wins
+ * and later ones are ignored; an empty name is ignored. */
+static void name_directive(Asm *a, const SrcLine *ln)
+{
+    const char *s = ln->operand;
+    size_t n;
+
+    if (a->pass != 2 || !ln->has_operand) {
+        return;
+    }
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    n = strcspn(s, " \t");
+    if (n == 0 || a->bin->out_name[0] != '\0') {
+        return;
+    }
+    if (n >= sizeof a->bin->out_name) {
+        diag(a, "output file name is too long");
+        return;
+    }
+    memcpy(a->bin->out_name, s, n);
+    a->bin->out_name[n] = '\0';
+}
+
+/* TYP keeps the low byte of its expression. Like merlin32, a missing or
+ * undefined expression sets the type to 00 without an error. */
+static void typ_directive(Asm *a, const SrcLine *ln)
+{
+    int32_t v = 0;
+    bool defined = false;
+
+    if (a->pass != 2) {
+        return;
+    }
+    if (!ln->has_operand) {
+        a->bin->file_type = 0;
+    } else if (eval(a, ln->operand, &v, &defined)) {
+        a->bin->file_type = defined ? (uint8_t)v : 0;
+    }
+}
+
 static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
 {
     if (strcmp(name, "ORG") == 0) {
@@ -1322,6 +1364,10 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         /* merlin32 accepts XC and does not enforce 65C02 opcodes without it. */
     } else if (strcmp(name, "ERR") == 0) {
         err_directive(a, ln);
+    } else if (strcmp(name, "SAV") == 0 || strcmp(name, "DSK") == 0) {
+        name_directive(a, ln);
+    } else if (strcmp(name, "TYP") == 0) {
+        typ_directive(a, ln);
     } else {
         diag(a, "unknown opcode or directive: %s", name);
     }
@@ -1364,7 +1410,7 @@ static bool directive_known(const char *name)
     static const char *const names[] = {
         "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "STR", "INV", "FLS", "REV",
         "ADR", "ADRL", "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "LST", "PAG", "TR", "EXP",
-        "ERR", "XC", "EQU", "=", "KBD",
+        "ERR", "XC", "SAV", "DSK", "TYP", "EQU", "=", "KBD",
         "DO", "IF", "ELSE", "FIN",
     };
     size_t i;
@@ -2394,6 +2440,8 @@ bool assemble_source(const char *path, const char *macro_dir, FILE *listing, Bin
     out->bytes = NULL;
     out->len = 0;
     out->cap = 0;
+    out->out_name[0] = '\0';
+    out->file_type = 0;
     a.path = path;
     a.macro_dir = macro_dir;
     a.listing = listing;

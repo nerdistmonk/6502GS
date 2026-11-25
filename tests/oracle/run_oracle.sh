@@ -1,11 +1,12 @@
 #!/bin/sh
 # Black-box oracle check: assemble one source with merlin32 and asm816 and
-# require identical flat binaries.
+# require identical flat binaries and _FileInformation.txt entries.
 #
 # usage: run_oracle.sh <asm816> <merlin32> <merlin-library-dir> <case.s>
 #
-# Contract: asm816 is invoked as `asm816 <stem>.s` in a scratch directory and
-# must write the flat binary to `<stem>` there, matching merlin32's output name.
+# Contract: asm816 is invoked as `asm816 -m <lib> <stem>.s` in a scratch
+# directory. Like merlin32, it names the binary after the first SAV or DSK
+# (else <stem>) and writes _FileInformation.txt beside it.
 set -eu
 
 asm816=$1
@@ -21,8 +22,11 @@ cp "$src" "$work/$stem.s"
 cp -r "$(dirname "$0")/fixtures/." "$work/"
 
 (cd "$work" && "$merlin" -v "$lib" "$stem.s" >/dev/null)
-mv "$work/$stem" "$work/$stem.oracle"
+out=$(sed 's/=.*//' "$work/_FileInformation.txt")
+mv "$work/$out" "$work/$out.oracle"
+mv "$work/_FileInformation.txt" "$work/_FileInformation.oracle"
 
 (cd "$work" && "$asm816" -m "$lib" "$stem.s")
 
-cmp "$work/$stem.oracle" "$work/$stem"
+cmp "$work/$out.oracle" "$work/$out"
+cmp "$work/_FileInformation.oracle" "$work/_FileInformation.txt"

@@ -60,6 +60,10 @@ typedef struct {
     uint8_t *bytes;
     size_t len;
     size_t cap;
+    /* Output file name from the first SAV or DSK; empty when none. */
+    char out_name[ASM_LINE_MAX];
+    /* ProDOS file type from the last TYP. */
+    uint8_t file_type;
 } Binary;
 
 /* Two passes over the source. Diagnostics go to stderr; the listing is

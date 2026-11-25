@@ -44,11 +44,34 @@ static int write_binary(const char *name, const Binary *bin)
     return 0;
 }
 
+/* Writes merlin32's _FileInformation.txt entry for the output file. The
+ * folder and version fields are fixed, as merlin32 writes them. */
+static int write_file_info(const char *name, uint8_t file_type)
+{
+    static const char folder[] = "000000000000000000000000000000000000";
+    FILE *out = fopen("_FileInformation.txt", "w");
+
+    if (out == NULL) {
+        perror("_FileInformation.txt");
+        return 1;
+    }
+    fprintf(out,
+        "%s=Type(%02X),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3),"
+        "FolderInfo1(%s),FolderInfo2(%s)",
+        name, file_type, folder, folder);
+    if (fclose(out) != 0) {
+        fprintf(stderr, "asm816: cannot write _FileInformation.txt\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     char stem[PATH_BUF];
     char lst_name[PATH_BUF + 4];
     const char *src;
+    const char *name;
     const char *macro_dir = NULL;
     FILE *listing;
     Binary bin;
@@ -89,7 +112,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (write_binary(stem, &bin) != 0) {
+    name = bin.out_name[0] != '\0' ? bin.out_name : stem;
+
+    if (write_binary(name, &bin) != 0) {
+        binary_free(&bin);
+        return 1;
+    }
+    if (write_file_info(name, bin.file_type) != 0) {
         binary_free(&bin);
         return 1;
     }

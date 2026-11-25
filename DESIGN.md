@@ -106,7 +106,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ### Phase 4: Output and completeness
 
-- [ ] `SAV`, `DSK`, `TYP` output hints
+- [x] `SAV`, `DSK`, `TYP` output hints (first name wins; `_FileInformation.txt` written)
 - [ ] Symbol table output
 - [ ] Full listing parity for the oracle test suite
 - [ ] Error-message parity for common mistakes
