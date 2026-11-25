@@ -49,6 +49,18 @@ Pipeline: read source → expand `PUT`/`USE` and macros → tokenize lines →
 evaluate conditionals and loops → resolve symbols over two passes → emit
 bytes and listing.
 
+## Resume here
+
+- Latest commit on `main`: `d2d4ec2` (`claude_tools` helpers). Phases 0–4 are
+  done. Phase 5 (OMF, REL, linker) is not started and needs a go-ahead.
+- Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
+  Oracle tests need `-DMERLIN32_BIN=/root/merlin32/Source/merlin32
+  -DMERLIN32_LIB=/root/merlin32/Library`.
+- Probing merlin behavior: `claude_tools/probe_merlin.sh <case.s>` shows its
+  listing and bytes. `claude_tools/probe_both.sh <case.s>` diffs merlin32
+  against asm816. `claude_tools/build_asan.sh` runs the ASan/UBSan build and ctest.
+- Scratch files in `/tmp` are not part of the repo and can be discarded.
+
 ## Phases and status
 
 Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
