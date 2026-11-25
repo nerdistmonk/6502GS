@@ -13,7 +13,12 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
 
-add_executable(asm816 src/asm/main.c)
+add_executable(asm816
+    src/asm/main.c
+    src/asm/assemble.c
+    src/asm/line.c
+    src/asm/expr.c
+    src/asm/opcodes.c)
 target_include_directories(asm816 PRIVATE src/asm)
 target_compile_definitions(asm816 PRIVATE ASM816_VERSION="${PROJECT_VERSION}")
 

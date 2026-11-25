@@ -1,0 +1,14 @@
+         ORG $2000
+         DFB $01,$02,>$1234
+         DB  <$1234
+         DW  $1234,$5678
+         DA  $ABCD
+         HEX 0A0B,0C
+         HEX 0D0E
+         ASC "Hi"
+         ASC 'lo'
+         DCI "Bye"
+         DS 4
+         DS 3,$EE
+         DS \
+         DFB 1
