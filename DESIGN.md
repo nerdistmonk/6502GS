@@ -82,12 +82,21 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] Conditionals: `DO`, `ELSE`, `FIN`, nested (no depth limit), `IF` on MX expressions (`MX>1`, `MX/2`, `MX&1`, `MX=3`), and `DO`/`IF` comparisons with `<`, `>`, `=`
   - `IF c?]n` tests compare the first character of argument n with c, as in merlin32. They are decided at macro expansion.
   - Merlin quirks matched: `ELSE` flips the current flag without checking the enclosing block; skipped lines ignore labels, EQU, and operands; 20+ nesting levels accepted.
+  - A label on a `DO`/`IF`/`ELSE`/`FIN` line is defined at the current PC, even inside a skipped block, as merlin32 does.
   - Known merlin bug, not matched: after `DO 0` / `DO 0` / `ELSE`, merlin sizes the next immediate operand as 8-bit even under `MX %00`. Our output is correct. The oracle case avoids immediates there.
 - [x] Loops: `LUP`, `--^` (nested LUP is an error; `@` labels become `ozunid_N` as merlin32 does, not the manual's A/B/C countdown; `@` in a LUP over 26 iterations is an error)
 - [x] Variables: `]name` assembler variables (`=`, `EQU`, or label on a line; redefinable; persist across passes)
   - Merlin's forward reference to a variable uses its value from the previous pass. A forward reference to a label-style variable is an error in merlin; we accept it (not yet matched).
 - [x] Macros: `MAC`, `EOM`, `]0` (argument count) and positional `]1`..`]8` arguments; `NAME args` and `PMC NAME`; body labels become `ozunid_N` per expansion, as merlin32 does; `:` local names in a macro expansion's operand are an error, as in merlin32
-- [ ] `PUT` / `USE` includes with search paths
+- [x] `PUT` / `USE` includes (expanded at load time, before macros, LUP, and conditionals)
+  - `PUT` resolves relative to the source file's directory. `USE` also falls back to the macro library (`asm816 -m <dir>`). Merlin's default library path is not used.
+  - Filename rule: no `.` and length ≥3 gets `.s` appended; otherwise the name is used as written. No deduplication.
+  - A file found via the macro library keeps only its `MAC`…`EOM` blocks.
+  - Nested `PUT`/`USE` inside an included file is a silent no-op, as in merlin32. A bare `PUT`/`USE` is silent.
+  - A `PUT` inside a skipped `DO` still opens its file and errors if it is missing.
+  - Listing line numbers shift after include expansion (not yet matched to merlin).
+  - Not yet probed: absolute paths, and an unterminated `MAC` at end of file.
+- [x] Macro terminator: `EOM` or `<<<` (merlin's `Macros.s` uses `<<<`)
 - [ ] Text directives: `STR`, `FLS`, `REV`, `INV`, `KBD`
 - [ ] Listing controls: `LST`, `PAG`, `TR`, `EXP`, `ERR`
 
