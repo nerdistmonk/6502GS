@@ -119,7 +119,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Divergence: merlin orders label-based equates (`X1+k`) by an unexplained key. We sort all equates by value, with definition order on ties. Oracle cases use constant equates only.
   - Variables (`]x`) are left out. Local labels print as `_name`.
 - [x] Full listing parity for the oracle test suite (`-v` writes `<stem>_Output.txt`, named after the DSK/SAV target)
-  - All 28 oracle listings match merlin32 (`run_oracle.sh` compares them).
+  - All 29 oracle listings match merlin32 (`run_oracle.sh` compares them).
   - `LST`, `PAG`, `TR`, and `EXP` rows are hidden inside macro expansions and `LUP` bodies, and their line numbers are still consumed. Outside expansions they show, and PUT-file rows show. Merlin32 writes no `PAG` form feeds, so we write none either. Covered by `tests/oracle/cases/listing_expansion.s`.
   - Label numbering is two-phase, as merlin32 does. Phase A: each macro expansion, in source order, takes numbers for its MAC-body labels (nested expansions included). Phase B: after all phase A numbers, LUP `@` labels and macro labels inside LUP bodies are numbered per iteration in body order.
   - The first layout run uses a high phase B base so its names cannot collide with later runs. Symbols persist across runs, so names must stay stable.
@@ -168,4 +168,4 @@ The binary is named `asm816`.
 
 Phases 1-4 are done when the oracle suite passes for 6502, 65C02, and
 65C816 sources, and all tests run under `ctest` on Linux with GCC. Status:
-met (`ctest` 50/50, including the oracle suite).
+met (`ctest` 53/53, including the oracle suite).

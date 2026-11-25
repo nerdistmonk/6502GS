@@ -5,8 +5,8 @@ that reads Merlin 8/16/16+ source. It is a clean-room clone of merlin32 and
 aims to produce the same bytes, listings, and error messages.
 
 This guide covers the current assembler (Phases 1-4). OMF object output, the
-REL directive, and the linker are not yet implemented. Disk image creation,
-the Merlin editor, and Sweet 16 mode are out of scope.
+REL directive, and the linker are not yet implemented. Disk image creation is
+deferred. The Merlin editor and Sweet 16 mode are out of scope.
 
 ## Building
 
