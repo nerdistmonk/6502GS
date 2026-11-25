@@ -61,6 +61,12 @@ typedef struct {
     bool idx16;
     bool dummy;
     int32_t dummy_pc;
+    /* Assembling flag, and for each open DO/IF the flag it saved. */
+    bool cond_on;
+    bool *conds;
+    size_t ncond;
+    size_t capcond;
+    bool in_cond;
 } Asm;
 
 static void diag(Asm *a, const char *fmt, ...)
@@ -123,12 +129,24 @@ static Symbol *sym_add(Asm *a, const char *key)
     return s;
 }
 
+/* True when s is exactly the token MX (case-insensitive). */
+static bool is_mx_token(const char *s)
+{
+    return toupper((unsigned char)s[0]) == 'M' && toupper((unsigned char)s[1]) == 'X'
+        && !isalnum((unsigned char)s[2]) && s[2] != '_';
+}
+
 static bool lookup_sym(void *ctx, const char *name, int32_t *value)
 {
     Asm *a = ctx;
     char key[SYM_KEY_MAX];
     const Symbol *s;
 
+    /* MX is a value only inside DO/IF operands, as in merlin32. */
+    if (a->in_cond && is_mx_token(name)) {
+        *value = (a->acc16 ? 0 : 2) | (a->idx16 ? 0 : 1);
+        return true;
+    }
     if (!make_key(a, name, key, sizeof key)) {
         return false;
     }
@@ -1073,6 +1091,119 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
     }
 }
 
+static bool cond_active(const Asm *a)
+{
+    return a->cond_on;
+}
+
+/* Like merlin32, a nested DO inside a skipped block stays off, and ELSE
+ * inverts the flag without consulting the enclosing block. */
+static bool cond_push(Asm *a, bool value)
+{
+    bool *grown;
+
+    if (a->ncond == a->capcond) {
+        size_t cap = a->capcond ? a->capcond * 2 : 8;
+
+        grown = realloc(a->conds, cap * sizeof *grown);
+        if (grown == NULL) {
+            return false;
+        }
+        a->conds = grown;
+        a->capcond = cap;
+    }
+    a->conds[a->ncond++] = a->cond_on;
+    a->cond_on = a->cond_on && value;
+    return true;
+}
+
+static bool is_conditional(const char *name)
+{
+    return strcmp(name, "DO") == 0 || strcmp(name, "IF") == 0
+        || strcmp(name, "ELSE") == 0 || strcmp(name, "FIN") == 0;
+}
+
+static bool directive_known(const char *name)
+{
+    static const char *const names[] = {
+        "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "ADR", "ADRL",
+        "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "EQU", "=", "DO", "IF", "ELSE", "FIN",
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof names / sizeof names[0]; i++) {
+        if (strcmp(name, names[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Lines in a skipped block are not assembled, but merlin32 still rejects
+ * mnemonics it does not recognize. */
+static void skipped_op(Asm *a, const char *name)
+{
+    char base[4];
+
+    snprintf(base, sizeof base, "%.3s", name);
+    if (opcode_known(name) || directive_known(name)) {
+        return;
+    }
+    if (strlen(name) == 4 && name[3] != 'D' && opcode_known(base)) {
+        return;
+    }
+    diag(a, "unknown opcode or directive: %s", name);
+}
+
+static bool eval_condition(Asm *a, const char *text, int32_t *value)
+{
+    bool defined = false;
+    bool ok;
+
+    a->in_cond = true;
+    ok = eval_operand(a, text, value, &defined);
+    a->in_cond = false;
+    return ok;
+}
+
+static void conditional_op(Asm *a, const char *name, const SrcLine *ln)
+{
+    bool value = false;
+
+    if (strcmp(name, "FIN") == 0) {
+        if (a->ncond == 0) {
+            diag(a, "FIN without DO or IF");
+        } else {
+            a->cond_on = a->conds[--a->ncond];
+        }
+        return;
+    }
+    if (strcmp(name, "ELSE") == 0) {
+        if (a->ncond == 0) {
+            diag(a, "ELSE without DO or IF");
+        } else {
+            a->cond_on = !a->cond_on;
+        }
+        return;
+    }
+    if (cond_active(a)) {
+        if (!ln->has_operand) {
+            diag(a, "%s needs an operand", name);
+        } else if (strcmp(name, "IF") == 0 && !is_mx_token(ln->operand)) {
+            diag(a, "IF supports only MX tests");
+        } else {
+            int32_t v = 0;
+
+            if (eval_condition(a, ln->operand, &v)) {
+                value = v != 0;
+            }
+        }
+    }
+    if (!cond_push(a, value)) {
+        fprintf(stderr, "out of memory\n");
+    }
+}
+
 static void format_listing_bytes(const Asm *a, char *buf, size_t cap)
 {
     size_t n = 0;
@@ -1101,7 +1232,7 @@ static void assemble_line(Asm *a, const char *text)
         return;
     }
     if (!ln.has_opcode) {
-        if (ln.has_label) {
+        if (ln.has_label && cond_active(a)) {
             define_label(a, ln.label, a->pc, true, false);
         }
     } else {
@@ -1111,7 +1242,11 @@ static void assemble_line(Asm *a, const char *text)
         name[i] = '\0';
         len = i;
 
-        if (strcmp(name, "EQU") == 0 || strcmp(name, "=") == 0) {
+        if (is_conditional(name)) {
+            conditional_op(a, name, &ln);
+        } else if (!cond_active(a)) {
+            skipped_op(a, name);
+        } else if (strcmp(name, "EQU") == 0 || strcmp(name, "=") == 0) {
             int32_t v = 0;
             bool defined = false;
 
@@ -1164,6 +1299,9 @@ static bool run_pass(Asm *a, int pass)
     a->acc16 = false;
     a->idx16 = false;
     a->dummy = false;
+    a->ncond = 0;
+    a->cond_on = true;
+    a->in_cond = false;
 
     while (!a->ended && fgets(buf, sizeof buf, f) != NULL) {
         size_t len = strlen(buf);
@@ -1202,6 +1340,9 @@ static bool run_pass(Asm *a, int pass)
         assemble_line(a, buf);
     }
     fclose(f);
+    if (pass == 2 && a->ncond > 0) {
+        diag(a, "missing FIN for DO or IF");
+    }
     return true;
 }
 
@@ -1234,6 +1375,7 @@ bool assemble_source(const char *path, FILE *listing, Binary *out)
 
     free(a.syms);
     free(a.wide);
+    free(a.conds);
     if (!ok) {
         binary_free(out);
     }

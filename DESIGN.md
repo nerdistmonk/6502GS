@@ -79,7 +79,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ### Phase 3: Control flow and text
 
-- [ ] Conditionals: `IF`, `DO`, `ELSE`, `FIN`, nested
+- [x] Conditionals: `DO`, `ELSE`, `FIN`, nested (no depth limit), `IF MX` tests
+  - `IF ]var` is deferred until variables and macros exist.
+  - Merlin quirks matched: `ELSE` flips the current flag without checking the enclosing block; skipped lines ignore labels, EQU, and operands; 20+ nesting levels accepted.
+  - Known merlin bug, not matched: after `DO 0` / `DO 0` / `ELSE`, merlin sizes the next immediate operand as 8-bit even under `MX %00`. Our output is correct. The oracle case avoids immediates there.
 - [ ] Loops: `LUP`, `--^`
 - [ ] Variables: `]name` assembler variables
 - [ ] Macros: `MAC`, `EOM`, positional `]1`..`]9` arguments
