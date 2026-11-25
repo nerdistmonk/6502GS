@@ -65,7 +65,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] Directives: `ORG`, `EQU`, `DS`, `DFB`/`DB`, `DW`, `DA`, `HEX`, `ASC`, `DCI`, `END`
 - [x] Flat binary and listing output
 - [x] Diagnostics with line numbers for syntax and range errors
-- [x] Oracle tests: 6502 programs match merlin32 bytes (9 cases)
+- [x] Oracle tests: 6502 programs match merlin32 bytes (`tests/oracle/cases/`)
 
 ### Phase 2: 65C02 and 65C816
 
