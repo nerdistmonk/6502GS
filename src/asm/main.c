@@ -95,13 +95,12 @@ static int write_file_info(const char *name, uint8_t file_type)
 int main(int argc, char **argv)
 {
     char stem[PATH_BUF];
-    char lst_name[PATH_BUF + 4];
     const char *src;
     const char *name;
     const char *macro_dir = NULL;
     int table_cols = -1;
+    bool verbose = false;
     int i;
-    FILE *listing;
     Binary bin;
 
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -115,6 +114,8 @@ int main(int argc, char **argv)
         } else if (!parse_table_flag(argv[i], &table_cols)) {
             usage(stderr);
             return 1;
+        } else {
+            verbose = true;
         }
     }
     if (argc < 2 || argv[argc - 1][0] == '-') {
@@ -127,20 +128,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "asm816: cannot derive output name from %s\n", src);
         return 1;
     }
-    snprintf(lst_name, sizeof lst_name, "%s.lst", stem);
-    listing = fopen(lst_name, "w");
-    if (listing == NULL) {
-        perror(lst_name);
-        return 1;
-    }
-
-    if (!assemble_source(src, macro_dir, listing, table_cols, &bin)) {
-        fclose(listing);
-        return 1;
-    }
-    if (fclose(listing) != 0) {
-        fprintf(stderr, "asm816: cannot write %s\n", lst_name);
-        binary_free(&bin);
+    if (!assemble_source(src, macro_dir, verbose ? stem : NULL, table_cols, &bin)) {
         return 1;
     }
 

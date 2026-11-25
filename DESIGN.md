@@ -80,6 +80,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 ### Phase 3: Control flow and text
 
 - [x] Conditionals: `DO`, `ELSE`, `FIN`, nested (no depth limit), `IF` on MX expressions (`MX>1`, `MX/2`, `MX&1`, `MX=3`), and `DO`/`IF` comparisons with `<`, `>`, `=`
+  - Divergence from the manual, as merlin32 does: a bare `IF` value is false (`IF 1` and `IF 0` skip the body), while `IF 1=1` is true. A `c?]n` test inside a macro is resolved to a comparison, so it stays true when it matches.
   - `IF c?]n` tests compare the first character of argument n with c, as in merlin32. They are decided at macro expansion.
   - Merlin quirks matched: `ELSE` flips the current flag without checking the enclosing block; skipped lines ignore labels, EQU, and operands; 20+ nesting levels accepted.
   - A label on a `DO`/`IF`/`ELSE`/`FIN` line is defined at the current PC, even inside a skipped block, as merlin32 does.
@@ -94,15 +95,15 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - A file found via the macro library keeps only its `MAC`…`EOM` blocks.
   - Nested `PUT`/`USE` inside an included file is a silent no-op, as in merlin32. A bare `PUT`/`USE` is silent.
   - A `PUT` inside a skipped `DO` still opens its file and errors if it is missing.
-  - Listing line numbers shift after include expansion (not yet matched to merlin).
+  - Listing line numbers after include expansion match merlin32 (oracle case `include`).
   - Not yet probed: absolute paths, and an unterminated `MAC` at end of file.
 - [x] Macro terminator: `EOM` or `<<<` (merlin's `Macros.s` uses `<<<`)
 - [x] Text directives: `ASC`, `DCI`, `STR`, `FLS`, `REV`, `INV`, `KBD`
   - Merlin differs from the manual, and merlin wins: `DCI` inverts the high bit of the last byte even when a hex suffix follows; `STR`'s length byte counts the hex suffix; `INV` and `FLS` mask the hex suffix too; `FLS` accepts only `$20`-`$5F` string characters; `REV` rejects a hex suffix.
   - `KBD` sets its label to the current PC when no key is read (merlin's behavior with no input). The prompt operand is ignored.
   - Not yet probed: `STR` over 255 bytes (we diagnose it), and whether `KBD` with a label-less line errors in merlin (we diagnose it).
-- [x] Listing controls: `LST`, `PAG`, `TR`, `EXP` accepted (no effect on the binary; listing format not matched yet); `ERR expr` fails the build when the value is nonzero or undefined, checked after both passes as merlin32 does
-  - Merlin's listing output (`LST OFF` suppression, `PAG` form feeds, `EXP` macro expansion lines) is not yet produced. The oracle compares binaries only.
+- [x] Listing controls: `LST`, `PAG`, `TR`, `EXP` accepted; `ERR expr` fails the build when the value is nonzero or undefined, checked after both passes as merlin32 does
+  - Listing format (`-v`) is matched in Phase 4. `LST OFF` suppression and `PAG` form feeds are not yet produced.
 
 ### Phase 4: Output and completeness
 
@@ -112,7 +113,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Labels print as `$` plus the low 16 bits at four digits. Names longer than 16 characters overflow their column, as merlin does.
   - Divergence: merlin orders label-based equates (`X1+k`) by an unexplained key. We sort all equates by value, with definition order on ties. Oracle cases use constant equates only.
   - Variables (`]x`) are left out. Local labels print as `_name`.
-- [ ] Full listing parity for the oracle test suite
+- [~] Full listing parity for the oracle test suite (`-v` writes `<stem>_Output.txt`, named after the DSK/SAV target)
+  - 26 of 27 oracle listings match merlin32. Not matched: `macros`.
+  - Open: `macros` LUP `@` labels. merlin32 numbers them out of source order and the numbers depend on later expansions; the rule is not yet known.
+  - Divergence: an ORG inside a DUM block lists its address as `$FFFF`, as merlin32 does. The assembled PC is unchanged.
 - [x] Error-message parity for common mistakes
   - Errors print to stderr as `      => [Error] <text>`, the same form merlin32 uses on stdout. Assembly stops reporting after the first error, which is the lowest-ranked stage (merlin's ordering, approximated).
   - Mapped to merlin text: unknown line, mode/element decode, undefined bracket operand, bad jump, bad HEX, DS negative and over 64 KB, undefined ORG/DS/DB/ERR, ERR nonzero, MX range, duplicate label, missing and extra FIN, missing main source.

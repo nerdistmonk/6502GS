@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "line.h"
+#include "listing.h"
 
 #define SYM_KEY_MAX (2 * ASM_NAME_MAX + 2)
 #define MAX_LAYOUT_PASSES 32
@@ -24,6 +25,10 @@ typedef struct {
     char shown[ASM_NAME_MAX + 2];
     size_t def_order;
     char *text;
+    /* A ] code label, listed as ozunid_N for the pass-2 generation oz_gen. */
+    bool oz_label;
+    int oz_gen;
+    char oz_name[24];
 } Symbol;
 
 typedef enum {
@@ -73,9 +78,23 @@ typedef struct {
     bool oom;
 } Buf;
 
-/* A frame is the source file (frames[0]) or one expanded macro body. */
+/* Where a line of a frame came from: its listing file index, its line number
+ * in that file, and whether it is assembled without appearing in the listing
+ * (lines of a macro-only USE file). */
+typedef struct {
+    int file;
+    int fline;
+    bool silent;
+} LineOrigin;
+
+/* Whether a statement is listed: not consumed at all, consumed but hidden, or shown. */
+enum lst_vis { LV_SKIP, LV_HIDE, LV_COUNT, LV_SHOW };
+
+/* A frame is the source file (frames[0]) or one expanded macro body. org[i]
+ * describes lines[i]. */
 typedef struct {
     char **lines;
+    LineOrigin *org;
     size_t nlines;
     size_t next;
 } Frame;
@@ -105,7 +124,8 @@ typedef struct {
     const char *path;
     /* Directory searched by USE when a file is not beside the source; may be NULL. */
     const char *macro_dir;
-    FILE *listing;
+    /* True when pass 2 records listing rows. */
+    bool listing;
     Binary *bin;
     Symbol *syms;
     size_t nsyms;
@@ -120,8 +140,18 @@ typedef struct {
     int32_t pc;
     int errors;
     bool ended;
-    uint8_t lst[4];
-    int lst_n;
+    /* Listing rows and their bytes, and the per-line state that builds a row. */
+    Listing lst;
+    LineOrigin cur_org;
+    unsigned long lst_seq;
+    int nfiles;
+    enum lst_vis lst_vis;
+    ListType lst_type;
+    SrcLine lst_ln;
+    /* Set while a DUM data directive runs: its bytes are listed as zero. */
+    bool lst_zero;
+    /* Whether the MAC being recorded is listed; false when its MAC line sits in a skipped block. */
+    bool def_listed;
     bool acc16;
     bool idx16;
     bool dummy;
@@ -142,6 +172,7 @@ typedef struct {
     int32_t lup_count;
     int32_t lup_left;
     int ozunid;
+    int ozgen;
     /* Macros persist across passes; run counts run_pass calls. */
     Macro *macros;
     size_t nmacros;
@@ -411,6 +442,19 @@ static bool is_mx_token(const char *s)
         && !isalnum((unsigned char)s[2]) && s[2] != '_';
 }
 
+/* True when the operand s contains the token MX. */
+static bool mentions_mx(const char *s)
+{
+    const char *p;
+
+    for (p = s; *p != '\0'; p++) {
+        if ((p == s || (!isalnum((unsigned char)p[-1]) && p[-1] != '_')) && is_mx_token(p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* An IF operand c?]n, such as #=]1: its first character is compared with the
  * first character of argument n. The middle character is ignored. */
 static bool char_test_operand(const char *op)
@@ -475,6 +519,9 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
         s->value = value;
         s->defined = defined;
         s->is_equ = true;
+        if (!equ) {
+            s->oz_label = true;
+        }
         return;
     }
     if (s->def_line == 0) {
@@ -616,8 +663,8 @@ static void emit(Asm *a, const uint8_t *bytes, int n)
         } else if (a->pass == 2 && !a->dummy && !bin_append(a->bin, bytes[i])) {
             diag(a, "out of memory");
         }
-        if (a->pass == 2 && a->lst_n < 4) {
-            a->lst[a->lst_n++] = bytes[i];
+        if (a->pass == 2 && a->listing) {
+            listing_put_byte(&a->lst, a->lst_zero ? 0 : bytes[i]);
         }
         a->pc++;
     }
@@ -1777,6 +1824,9 @@ static void conditional_op(Asm *a, const char *name, const SrcLine *ln)
         } else if (strcmp(name, "IF") == 0 && char_test_operand(ln->operand)) {
             /* Outside a macro the argument is empty, so the test is false. */
             value = false;
+        } else if (strcmp(name, "IF") == 0 && strpbrk(ln->operand, "<>=") == NULL && !mentions_mx(ln->operand)) {
+            /* merlin32 skips a bare IF value unless it is an MX expression. */
+            value = false;
         } else {
             int32_t v = 0;
 
@@ -1829,7 +1879,8 @@ static bool append_line(char ***lines, size_t *n, size_t *cap, const char *text)
     return true;
 }
 
-static bool push_frame(Asm *a, char **lines, size_t nlines)
+/* Takes ownership of lines and org on success. */
+static bool push_frame(Asm *a, char **lines, LineOrigin *org, size_t nlines)
 {
     Frame *f;
 
@@ -1846,6 +1897,7 @@ static bool push_frame(Asm *a, char **lines, size_t nlines)
     }
     f = &a->frames[a->nframes++];
     f->lines = lines;
+    f->org = org;
     f->nlines = nlines;
     f->next = 0;
     return true;
@@ -1856,6 +1908,7 @@ static void pop_frame(Asm *a)
     Frame *f = cur_frame(a);
 
     free_lines(f->lines, f->nlines);
+    free(f->org);
     a->nframes--;
 }
 
@@ -1877,26 +1930,31 @@ static bool is_macro_end(const SrcLine *ln)
 }
 
 /* Reads every line of f and closes it. A line longer than ASM_LINE_MAX is
- * reported and kept as an empty line. */
-static bool read_lines(Asm *a, FILE *f, char ***lines, size_t *nlines)
+ * reported and kept as an empty line. ends_nl reports whether the last line
+ * was terminated by a newline. */
+static bool read_lines(Asm *a, FILE *f, char ***lines, size_t *nlines, bool *ends_nl)
 {
     char buf[ASM_LINE_MAX + 2];
     char **out = NULL;
     size_t n = 0;
     size_t cap = 0;
+    bool nl = false;
 
     while (fgets(buf, sizeof buf, f) != NULL) {
         size_t len = strlen(buf);
         int ch;
 
+        nl = false;
         if (len > 0 && buf[len - 1] == '\n') {
             buf[--len] = '\0';
+            nl = true;
         } else if (!feof(f)) {
             a->line_no = (int)(n + 1);
             diag(a, "line too long");
             while ((ch = fgetc(f)) != '\n' && ch != EOF) {
                 ;
             }
+            nl = ch == '\n';
             buf[0] = '\0';
             len = 0;
         }
@@ -1913,10 +1971,11 @@ static bool read_lines(Asm *a, FILE *f, char ***lines, size_t *nlines)
     fclose(f);
     *lines = out;
     *nlines = n;
+    *ends_nl = nl;
     return true;
 }
 
-static bool load_source(Asm *a, char ***lines, size_t *nlines)
+static bool load_source(Asm *a, char ***lines, size_t *nlines, bool *ends_nl)
 {
     FILE *f = fopen(a->path, "r");
 
@@ -1924,7 +1983,7 @@ static bool load_source(Asm *a, char ***lines, size_t *nlines)
         record(a, RANK_OPEN, "Impossible to open Source file '%s'.", a->path);
         return false;
     }
-    return read_lines(a, f, lines, nlines);
+    return read_lines(a, f, lines, nlines, ends_nl);
 }
 
 /* Name PUT and USE open: three or more characters with no '.' get ".s";
@@ -1971,19 +2030,71 @@ static FILE *open_in_dir(const char *dir, const char *name)
     return fopen(path, "r");
 }
 
-/* Appends the lines of one PUT or USE file. Included files take no PUT or USE
- * lines of their own. A USE file found only in the macro directory keeps just
- * its MAC...EOM blocks, as merlin32 does. */
-static bool include_file(Asm *a, const char *operand, bool use, char ***out, size_t *nout, size_t *cap)
+/* Growing list of source lines, each with its listing origin. */
+typedef struct {
+    char **lines;
+    LineOrigin *org;
+    size_t n;
+    size_t cap;
+} Source;
+
+static void source_free(Source *s)
+{
+    free_lines(s->lines, s->n);
+    free(s->org);
+    s->lines = NULL;
+    s->org = NULL;
+    s->n = 0;
+    s->cap = 0;
+}
+
+static bool source_add(Source *s, const char *text, LineOrigin org)
+{
+    size_t len = strlen(text);
+    char *copy;
+
+    if (s->n == s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 64;
+        char **grown = realloc(s->lines, cap * sizeof *grown);
+        LineOrigin *grown_org;
+
+        if (grown == NULL) {
+            return false;
+        }
+        s->lines = grown;
+        grown_org = realloc(s->org, cap * sizeof *grown_org);
+        if (grown_org == NULL) {
+            return false;
+        }
+        s->org = grown_org;
+        s->cap = cap;
+    }
+    copy = malloc(len + 1);
+    if (copy == NULL) {
+        return false;
+    }
+    memcpy(copy, text, len + 1);
+    s->lines[s->n] = copy;
+    s->org[s->n] = org;
+    s->n++;
+    return true;
+}
+
+static bool splice_lines(Asm *a, char **lines, size_t nlines, bool ends_nl, int file,
+                         bool macro_only, bool expand, Source *out);
+
+/* Opens a PUT or USE file, gives it the next listing file index, and adds its
+ * lines. A USE file found only in the macro directory is macro-only. */
+static bool include_file(Asm *a, const char *operand, bool use, Source *out)
 {
     char name[INCLUDE_PATH_MAX];
     char dir[INCLUDE_PATH_MAX];
     char **lines = NULL;
     size_t nlines = 0;
+    bool ends_nl = false;
     bool macro_only = false;
-    bool in_mac = false;
     FILE *f = NULL;
-    size_t i;
+    bool ok;
 
     if (operand[0] == '\0') {
         return true;
@@ -2001,70 +2112,91 @@ static bool include_file(Asm *a, const char *operand, bool use, char ***out, siz
         record(a, RANK_OPEN, "Impossible to open Source file '%s'.", name);
         return true;
     }
-    if (!read_lines(a, f, &lines, &nlines)) {
+    if (!read_lines(a, f, &lines, &nlines, &ends_nl)) {
         return false;
     }
+    listing_set_name(&a->lst, ++a->nfiles, name);
+    ok = splice_lines(a, lines, nlines, ends_nl, a->nfiles, macro_only, false, out);
+    free_lines(lines, nlines);
+    return ok;
+}
+
+/* Appends the lines of one file. A PUT or USE line outside a MAC body is kept
+ * as a no-op directive row. When expand is set (the main source), the file it
+ * names is spliced in right after that line, so included lines take part in
+ * macros, LUP, and conditionals as if written in place. Included files keep
+ * their PUT and USE lines as rows but do not open the files they name. A
+ * macro-only file keeps just its MAC...EOM blocks, which are silent. A file
+ * ending in a newline gets a final empty row, as merlin32 lists it. */
+static bool splice_lines(Asm *a, char **lines, size_t nlines, bool ends_nl, int file,
+                         bool macro_only, bool expand, Source *out)
+{
+    bool in_mac = false;
+    size_t i;
+
     for (i = 0; i < nlines; i++) {
         SrcLine ln;
         const char *err = NULL;
         bool has_op = parse_line(lines[i], &ln, &err) && ln.has_opcode;
-        bool keep = true;
         bool is_eom = has_op && is_macro_end(&ln);
+        LineOrigin org;
 
+        org.file = file;
+        org.fline = (int)(i + 1);
+        org.silent = macro_only;
+        if (expand) {
+            a->line_no = (int)(i + 1);
+        }
         if (has_op && (word_is(ln.opcode, "PUT") || word_is(ln.opcode, "USE"))) {
-            keep = false;
-        } else if (has_op && word_is(ln.opcode, "MAC")) {
+            if (macro_only) {
+                continue;
+            }
+            if (!in_mac && !source_add(out, lines[i], org)) {
+                return false;
+            }
+            if (expand && !include_file(a, ln.has_operand ? ln.operand : "", word_is(ln.opcode, "USE"), out)) {
+                return false;
+            }
+            continue;
+        }
+        if (has_op && word_is(ln.opcode, "MAC")) {
             in_mac = true;
         } else if (is_eom) {
             in_mac = false;
         }
         if (macro_only && !in_mac && !is_eom) {
-            keep = false;
+            continue;
         }
-        if (keep && !append_line(out, nout, cap, lines[i])) {
-            free_lines(lines, nlines);
+        if (!source_add(out, lines[i], org)) {
             return false;
         }
     }
-    free_lines(lines, nlines);
+    if (ends_nl && nlines > 0 && !macro_only) {
+        LineOrigin org;
+
+        org.file = file;
+        org.fline = (int)nlines + 1;
+        org.silent = false;
+        return source_add(out, "", org);
+    }
     return true;
 }
 
-/* Replaces each PUT and USE line of the source with the file it names, so
- * included lines take part in macros, LUP, and conditionals as if written
- * in place. */
-static bool expand_includes(Asm *a, char ***lines, size_t *nlines)
+/* Splices the PUT and USE files into the main source. The main file is file 1. */
+static bool expand_includes(Asm *a, char **lines, size_t nlines, bool ends_nl, Source *out)
 {
-    char **out = NULL;
-    size_t n = 0;
-    size_t cap = 0;
-    size_t i;
+    const char *slash = strrchr(a->path, '/');
+    bool ok;
 
-    for (i = 0; i < *nlines; i++) {
-        SrcLine ln;
-        const char *err = NULL;
-        bool ok;
-
-        a->line_no = (int)(i + 1);
-        if (parse_line((*lines)[i], &ln, &err) && ln.has_opcode &&
-            (word_is(ln.opcode, "PUT") || word_is(ln.opcode, "USE"))) {
-            ok = include_file(a, ln.has_operand ? ln.operand : "", word_is(ln.opcode, "USE"), &out, &n, &cap);
-        } else {
-            ok = append_line(&out, &n, &cap, (*lines)[i]);
-        }
-        if (!ok) {
-            free_lines(out, n);
-            free_lines(*lines, *nlines);
-            *lines = NULL;
-            *nlines = 0;
-            return false;
-        }
+    a->nfiles = 1;
+    listing_set_name(&a->lst, 1, slash ? slash + 1 : a->path);
+    ok = splice_lines(a, lines, nlines, ends_nl, 1, false, true, out);
+    if (!ok) {
+        source_free(out);
     }
-    free_lines(*lines, *nlines);
-    *lines = out;
-    *nlines = n;
-    return true;
+    return ok;
 }
+
 
 static void buf_add(Buf *b, const char *s, size_t n)
 {
@@ -2159,6 +2291,7 @@ static void begin_macro(Asm *a, const char *name)
     m->def_run = a->run;
     a->def = m;
     a->in_def = true;
+    a->def_listed = cond_active(a);
 }
 
 /* Stores one line of a MAC body. The body ends at EOM in the opcode field. */
@@ -2166,11 +2299,20 @@ static void record_macro_line(Asm *a, const char *text)
 {
     SrcLine ln;
     const char *err = NULL;
+    bool parsed = parse_line(text, &ln, &err);
 
-    if (parse_line(text, &ln, &err) && is_macro_end(&ln)) {
+    a->lst_vis = a->def_listed ? LV_SHOW : LV_SKIP;
+    a->lst_type = LST_DIRECTIVE;
+    if (parsed) {
+        a->lst_ln = ln;
+    }
+    if (parsed && is_macro_end(&ln)) {
         a->in_def = false;
         a->def = NULL;
         return;
+    }
+    if (parsed && ln.has_label && ln.label[0] == ']') {
+        a->ozunid++;
     }
     if (!append_line(&a->def->lines, &a->def->nlines, &a->def->caplines, text)) {
         fprintf(stderr, "out of memory\n");
@@ -2321,7 +2463,8 @@ static bool resolve_char_test(const char *text, char args[][ASM_LINE_MAX], size_
     } else if (n <= nargs) {
         first = args[n - 1][0];
     }
-    snprintf(line, sizeof line, "%s IF %d", ln.has_label ? ln.label : "",
+    /* Written as a comparison, since a bare IF value is false (see conditional_op). */
+    snprintf(line, sizeof line, "%s IF %d=1", ln.has_label ? ln.label : "",
              first != '\0' && first == ln.operand[0]);
     buf_add(out, line, strlen(line));
     return true;
@@ -2363,6 +2506,7 @@ static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_ope
     size_t nbody = m->nlines;
     LabelMap *map;
     char **lines;
+    LineOrigin *org;
     size_t nmap = 0;
     size_t i;
 
@@ -2417,8 +2561,18 @@ static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_ope
         }
     }
     free(map);
-    if (!push_frame(a, lines, nbody)) {
+    org = malloc((nbody ? nbody : 1) * sizeof *org);
+    if (org == NULL) {
+        fprintf(stderr, "out of memory\n");
         free_lines(lines, nbody);
+        return;
+    }
+    for (i = 0; i < nbody; i++) {
+        org[i] = a->cur_org;
+    }
+    if (!push_frame(a, lines, org, nbody)) {
+        free_lines(lines, nbody);
+        free(org);
     }
 }
 
@@ -2505,37 +2659,303 @@ static void lup_label(Asm *a, SrcLine *ln)
     }
 }
 
-static void format_listing_bytes(const Asm *a, char *buf, size_t cap)
+/* Pseudo-ops listed as data rows. The DUM ones list their bytes as zero. */
+static bool data_op(const char *name)
 {
-    size_t n = 0;
-    int i;
+    static const char *const ops[] = {"DFB", "DB", "DA", "DW", "ADR", "ADRL", "DS", "ASC",
+                                      "DCI", "STR", "FLS", "HEX", "INV", "REV"};
+    size_t i;
 
-    buf[0] = '\0';
-    for (i = 0; i < a->lst_n; i++) {
-        n += (size_t)snprintf(buf + n, cap - n, "%s%02X", i ? " " : "", a->lst[i]);
+    for (i = 0; i < sizeof ops / sizeof ops[0]; i++) {
+        if (strcmp(name, ops[i]) == 0) {
+            return true;
+        }
     }
+    return false;
+}
+
+static bool dum_zero_op(const char *name)
+{
+    static const char *const ops[] = {"DFB", "DB", "DA", "DW", "ADR", "ADRL", "DS"};
+    size_t i;
+
+    for (i = 0; i < sizeof ops / sizeof ops[0]; i++) {
+        if (strcmp(name, ops[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void assemble_statement(Asm *a, const char *text);
 
-static void assemble_line(Asm *a, const char *text)
+/* Appends one operand as merlin32 lists it. An EQU or = name shows its value
+ * as {$value}, with two hex digits up to $FF, four up to $FFFF, and six
+ * above. A :local name shows as _local. Quoted text, numbers, and ]variables
+ * are copied as written. */
+/* Listing name for a ] code label, numbered on first sight in pass 2. */
+static const char *oz_name(Asm *a, Symbol *s)
+{
+    if (s->oz_gen != a->ozgen) {
+        s->oz_gen = a->ozgen;
+        a->ozunid++;
+        snprintf(s->oz_name, sizeof s->oz_name, "ozunid_%d", a->ozunid);
+    }
+    return s->oz_name;
+}
+
+/* A '*' is the program counter only where an operand term may begin. */
+static bool pc_operand_pos(const char *op, const char *star)
+{
+    const char *q = star;
+
+    while (q > op && (q[-1] == ' ' || q[-1] == '\t')) {
+        q--;
+    }
+    return q == op || strchr("#([,+-<>", q[-1]) != NULL;
+}
+
+/* Writes the operand as the listing shows it. A '*' program counter gets its
+ * own Empty row, labelled ozunid_N at the pre-line PC, before the instruction row. */
+/* EQU values written as a plain decimal or $hex literal are echoed as written. */
+static bool equ_literal(const char *text)
+{
+    const char *p = text;
+
+    if (text == NULL || *text == '\0') {
+        return false;
+    }
+    if (*p == '$') {
+        p++;
+        if (*p == '\0') {
+            return false;
+        }
+        for (; *p != '\0'; p++) {
+            if (!isxdigit((unsigned char)*p)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    for (; *p != '\0'; p++) {
+        if (!isdigit((unsigned char)*p)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void list_operand(Asm *a, const ListRow *row, const char *op, Buf *out)
+{
+    const char *p = op;
+
+    while (*p != '\0') {
+        const char *start = p;
+
+        if (*p == '\'' || *p == '"') {
+            char quote = *p++;
+
+            while (*p != '\0' && *p != quote) {
+                p++;
+            }
+            if (*p == quote) {
+                p++;
+            }
+            buf_add(out, start, (size_t)(p - start));
+        } else if (*p == '$' || *p == '%' || isdigit((unsigned char)*p)) {
+            p++;
+            while (isalnum((unsigned char)*p)) {
+                p++;
+            }
+            buf_add(out, start, (size_t)(p - start));
+        } else if (*p == ']' || name_start((unsigned char)*p) ||
+                   (*p == ':' && name_start((unsigned char)p[1]))) {
+            char name[ASM_LINE_MAX];
+            char key[SYM_KEY_MAX];
+            Symbol *s;
+            size_t n;
+
+            if (*p == ']') {
+                p++;
+            }
+            if (*p == ':') {
+                p++;
+            }
+            while (name_char((unsigned char)*p)) {
+                p++;
+            }
+            n = (size_t)(p - start);
+            if (n >= sizeof name) {
+                buf_add(out, start, n);
+                continue;
+            }
+            memcpy(name, start, n);
+            name[n] = '\0';
+            s = NULL;
+            if (make_key(a, name, key, sizeof key)) {
+                s = sym_find(a, key);
+            }
+            if (s != NULL && name[0] == ']') {
+                if (s->oz_label) {
+                    const char *z = oz_name(a, s);
+
+                    buf_add(out, z, strlen(z));
+                } else if (s->defined && a->lup_open) {
+                    char value[16];
+
+                    int n2 = snprintf(value, sizeof value, "%ld", (long)s->value);
+
+                    buf_add(out, value, (size_t)n2);
+                } else {
+                    buf_add(out, name, n);
+                }
+            } else if (s != NULL && s->defined && s->is_equ) {
+                char value[32];
+                uint32_t u = (uint32_t)s->value & 0xFFFFFF;
+
+                if (equ_literal(s->text)) {
+                    snprintf(value, sizeof value, "{%s}", s->text);
+                } else {
+                    snprintf(value, sizeof value, "{$%0*lX}", u <= 0xFF ? 2 : u <= 0xFFFF ? 4 : 6,
+                             (unsigned long)u);
+                }
+                buf_add(out, value, strlen(value));
+            } else if (s != NULL && name[0] == ':' && s->shown[0] != '\0') {
+                buf_add(out, s->shown, strlen(s->shown));
+            } else {
+                buf_add(out, name, n);
+            }
+        } else if (*p == '*' && pc_operand_pos(op, p)) {
+            char name[24];
+            ListRow empty = *row;
+
+            a->ozunid++;
+            snprintf(name, sizeof name, "ozunid_%d", a->ozunid);
+            empty.line = a->lst_seq++;
+            empty.type = LST_EMPTY;
+            empty.label = name;
+            empty.opcode = NULL;
+            empty.operand = NULL;
+            empty.nbytes = 0;
+            if (!listing_add_row(&a->lst, &empty)) {
+                fprintf(stderr, "out of memory\n");
+            }
+            buf_add(out, name, strlen(name));
+            p++;
+        } else {
+            buf_add(out, p, 1);
+            p++;
+        }
+    }
+}
+
+/* Assembles one source line and, in pass 2 with a listing, records its row.
+ * The row's bytes are the pool bytes from mark on; a skipped or hidden line
+ * gives them back. */
+static void assemble_line(Asm *a, const char *text, LineOrigin org)
 {
     int32_t pc0 = a->pc;
+    bool dum0 = a->dummy;
+    size_t mark = a->lst.nbytes;
+    ListRow row;
+    char opc[OPCODE_MAX];
+    char label_text[ASM_LINE_MAX + 2];
+    Buf shown_op = {0};
+    bool mx_unknown;
 
-    a->lst_n = 0;
+    a->lst_vis = LV_SKIP;
+    a->lst_type = LST_EMPTY;
+    a->lst_zero = false;
+    memset(&a->lst_ln, 0, sizeof a->lst_ln);
+    mx_unknown = a->ncond > 0 && !a->conds[a->ncond - 1];
     if (a->in_def) {
         record_macro_line(a, text);
     } else {
         assemble_statement(a, text);
     }
 
-    if (a->pass == 2 && a->listing != NULL) {
-        char hex[12];
-
-        format_listing_bytes(a, hex, sizeof hex);
-        fprintf(a->listing, "%5d  %04X  %-8s %s\n", a->line_no, (unsigned)pc0, hex, text);
+    if (a->pass != 2 || !a->listing) {
+        return;
     }
+    if (org.silent) {
+        a->lst_vis = LV_SKIP;
+    }
+    if (a->lst_vis == LV_SKIP) {
+        a->lst.nbytes = mark;
+        return;
+    }
+    if (a->lst_vis == LV_HIDE) {
+        a->lst.nbytes = mark;
+        return;
+    }
+    if (a->lst_vis == LV_COUNT) {
+        /* Hidden macro-expansion lines still take a line number in merlin32. */
+        a->lst.nbytes = mark;
+        a->lst_seq++;
+        return;
+    }
+    a->lst_seq++;
+
+    memset(&row, 0, sizeof row);
+    row.file = org.file;
+    row.fline = org.fline;
+    row.type = a->lst_type;
+    if ((dum0 || a->dummy) && a->lst_ln.has_opcode &&
+        (row.type == LST_CODE || row.type == LST_DATA || row.type == LST_DIRECTIVE)) {
+        row.type = LST_DUM;
+    }
+    row.pc = (!dum0 && a->dummy) ? a->pc : pc0;
+    if (a->dummy && a->lst_ln.has_opcode && word_is(a->lst_ln.opcode, "ORG")) {
+        /* merlin32 lists an ORG inside DUM at $FFFF. */
+        row.pc = 0xFFFF;
+    }
+    if (mx_unknown) {
+        strcpy(row.mx, "??");
+    } else {
+        row.mx[0] = a->acc16 ? '0' : '1';
+        row.mx[1] = a->idx16 ? '0' : '1';
+        row.mx[2] = '\0';
+    }
+    row.boff = mark;
+    row.nbytes = a->lst.nbytes - mark;
+    row.label = NULL;
+    if (a->lst_ln.has_label) {
+        if (a->lst_ln.label[0] == ':') {
+            snprintf(label_text, sizeof label_text, "_%s", a->lst_ln.label + 1);
+            row.label = label_text;
+        } else {
+            row.label = a->lst_ln.label;
+            if (a->lst_ln.label[0] == ']') {
+                Symbol *s = sym_find(a, a->lst_ln.label);
+
+                if (s != NULL && s->oz_label) {
+                    row.label = (char *)oz_name(a, s);
+                }
+            }
+        }
+    }
+    if (a->lst_ln.has_opcode) {
+        size_t olen = strlen(a->lst_ln.opcode);
+
+        if (olen > 0 && a->lst_ln.opcode[olen - 1] == ':') {
+            olen--;
+        }
+        memcpy(opc, a->lst_ln.opcode, olen);
+        opc[olen] = '\0';
+        row.opcode = opc;
+    }
+    if (a->lst_ln.has_operand) {
+        buf_init(&shown_op);
+        list_operand(a, &row, a->lst_ln.operand, &shown_op);
+        row.operand = shown_op.oom ? a->lst_ln.operand : shown_op.s;
+    }
+    row.line = a->lst_seq;
+    if (!listing_add_row(&a->lst, &row)) {
+        fprintf(stderr, "out of memory\n");
+    }
+    free(shown_op.s);
 }
+
 
 static void assemble_statement(Asm *a, const char *text)
 {
@@ -2557,7 +2977,10 @@ static void assemble_statement(Asm *a, const char *text)
     if (ln.has_label && cond_active(a)) {
         lup_label(a, &ln);
     }
+    a->lst_ln = ln;
     if (!ln.has_opcode) {
+        a->lst_vis = (a->lup_skip || !cond_active(a)) ? LV_SKIP : LV_SHOW;
+        a->lst_type = LST_EMPTY;
         if (ln.has_label && cond_active(a)) {
             define_label(a, ln.label, a->pc, true, false);
         }
@@ -2573,6 +2996,8 @@ static void assemble_statement(Asm *a, const char *text)
         } else if (a->lup_skip) {
             /* Body of a LUP that assembles zero times. */
         } else if (strcmp(name, "MAC") == 0) {
+            a->lst_type = LST_DIRECTIVE;
+            a->lst_vis = cond_active(a) ? LV_SHOW : LV_SKIP;
             if (!ln.has_label) {
                 diag(a, "MAC needs a name");
             } else {
@@ -2581,20 +3006,52 @@ static void assemble_statement(Asm *a, const char *text)
         } else if (strcmp(name, "LUP") == 0) {
             lup_begin(a, &ln);
         } else if (is_conditional(name)) {
+            a->lst_type = LST_DIRECTIVE;
+            if (!cond_active(a) && (strcmp(name, "DO") == 0 || strcmp(name, "IF") == 0)) {
+                a->lst_vis = LV_SKIP;
+            } else if (a->nframes == 1) {
+                a->lst_vis = LV_SHOW;
+            } else if (ln.has_label) {
+                a->lst_vis = LV_SHOW;
+                a->lst_type = LST_EMPTY;
+                a->lst_ln.has_opcode = false;
+                a->lst_ln.has_operand = false;
+            } else if (a->nframes > 1 && (strcmp(name, "FIN") == 0 || strcmp(name, "ELSE") == 0)) {
+                a->lst_vis = LV_COUNT;
+            } else if (a->nframes > 1 && cond_active(a)) {
+                a->lst_vis = LV_COUNT;
+            } else {
+                a->lst_vis = LV_HIDE;
+            }
             if (ln.has_label) {
                 define_label(a, ln.label, a->pc, true, false);
             }
             conditional_op(a, name, &ln);
+        } else if (strcmp(name, "PUT") == 0 || strcmp(name, "USE") == 0) {
+            /* The named file's lines follow this row; nothing is assembled here. */
+            a->lst_type = LST_DIRECTIVE;
+            if (cond_active(a)) {
+                a->lst_vis = a->nframes == 1 ? LV_SHOW : LV_HIDE;
+            }
         } else if (!cond_active(a)) {
             if (strcmp(name, "PMC") != 0 && find_macro(a, ln.opcode) == NULL) {
                 skipped_op(a, name);
             }
         } else if (strcmp(name, "PMC") == 0 || find_macro(a, ln.opcode) != NULL) {
+            a->lst_type = LST_MACRO;
+            if (a->nframes == 1 && !a->lup_open) {
+                a->lst_vis = LV_SHOW;
+            } else {
+                a->lst_vis = (a->nframes > 1 || a->lup_open) ? LV_COUNT : LV_HIDE;
+            }
             macro_line(a, &ln, strcmp(name, "PMC") == 0);
         } else if (strcmp(name, "EQU") == 0 || strcmp(name, "=") == 0) {
             int32_t v = 0;
             bool defined = false;
+            bool var = ln.has_label && ln.label[0] == ']';
 
+            a->lst_type = var ? LST_VARIABLE : LST_EQUIV;
+            a->lst_vis = (a->lup_open || (var && a->nframes > 1)) ? LV_HIDE : LV_SHOW;
             if (!ln.has_label) {
                 diag(a, "EQU needs a label");
             } else if (!ln.has_operand) {
@@ -2606,12 +3063,15 @@ static void assemble_statement(Asm *a, const char *text)
         } else if (strcmp(name, "KBD") == 0) {
             /* merlin32 reads a key only interactively. With no key it sets
              * the label to the current PC, so the prompt operand is ignored. */
+            a->lst_type = LST_DIRECTIVE;
+            a->lst_vis = LV_SHOW;
             if (!ln.has_label) {
                 diag(a, "KBD needs a label");
             } else {
                 define_label(a, ln.label, a->pc, true, false);
             }
         } else {
+            a->lst_vis = LV_SHOW;
             if (ln.has_label) {
                 define_label(a, ln.label, a->pc, true, false);
             }
@@ -2621,8 +3081,14 @@ static void assemble_statement(Asm *a, const char *text)
                 name[3] = '\0';
             }
             if (opcode_known(name)) {
+                a->lst_type = LST_CODE;
                 instruction(a, name, forced, &ln);
             } else {
+                a->lst_type = data_op(name) ? LST_DATA : LST_DIRECTIVE;
+                a->lst_zero = a->dummy && dum_zero_op(name);
+                if (strcmp(name, "END") == 0) {
+                    a->lst_vis = LV_SKIP;
+                }
                 pseudo_op(a, name, &ln);
             }
         }
@@ -2634,10 +3100,15 @@ static bool run_pass(Asm *a, int pass)
 {
     char **lines = NULL;
     size_t nlines = 0;
+    bool ends_nl = false;
+    Source src = {NULL, NULL, 0, 0};
 
     a->pass = pass;
+    a->lst_seq = 0;
+    listing_clear(&a->lst);
+    a->nfiles = 0;
     a->line_no = 0;
-    a->pc = 0;
+    a->pc = 0x8000;
     a->scope[0] = '\0';
     a->ended = false;
     a->acc16 = false;
@@ -2649,25 +3120,29 @@ static bool run_pass(Asm *a, int pass)
     a->lup_open = false;
     a->lup_skip = false;
     a->ozunid = 0;
+    a->ozgen++;
     a->wide_seq = 0;
     a->run++;
 
     while (a->nframes > 0) {
         pop_frame(a);
     }
-    if (!load_source(a, &lines, &nlines)) {
+    if (!load_source(a, &lines, &nlines, &ends_nl)) {
         return false;
     }
-    if (!expand_includes(a, &lines, &nlines)) {
-        return false;
-    }
-    if (!push_frame(a, lines, nlines)) {
+    if (!expand_includes(a, lines, nlines, ends_nl, &src)) {
         free_lines(lines, nlines);
+        return false;
+    }
+    free_lines(lines, nlines);
+    if (!push_frame(a, src.lines, src.org, src.n)) {
+        source_free(&src);
         return false;
     }
 
     while (!a->ended) {
         Frame *f = cur_frame(a);
+        LineOrigin org;
         const char *text;
 
         if (f->next >= f->nlines) {
@@ -2677,11 +3152,13 @@ static bool run_pass(Asm *a, int pass)
             pop_frame(a);
             continue;
         }
+        org = f->org[f->next];
         text = f->lines[f->next++];
         if (a->nframes == 1) {
             a->line_no = (int)f->next;
+            a->cur_org = org;
         }
-        assemble_line(a, text);
+        assemble_line(a, text, org);
     }
     while (a->nframes > 0) {
         pop_frame(a);
@@ -2802,10 +3279,13 @@ static bool write_symbol_table(FILE *f, const Asm *a, size_t cols)
     return ferror(f) == 0;
 }
 
-bool assemble_source(const char *path, const char *macro_dir, FILE *listing, int table_cols, Binary *out)
+bool assemble_source(const char *path, const char *macro_dir, const char *listing_stem, int table_cols, Binary *out)
 {
     Asm a;
+    FILE *listing = NULL;
+    char lst_name[ASM_LINE_MAX + 16];
     bool ok;
+    bool pass2_started;
     size_t i;
 
     memset(&a, 0, sizeof a);
@@ -2816,7 +3296,7 @@ bool assemble_source(const char *path, const char *macro_dir, FILE *listing, int
     out->file_type = 0;
     a.path = path;
     a.macro_dir = macro_dir;
-    a.listing = listing;
+    a.listing = listing_stem != NULL;
     a.bin = out;
 
     ok = true;
@@ -2835,16 +3315,34 @@ bool assemble_source(const char *path, const char *macro_dir, FILE *listing, int
             ok = false;
         }
     }
+    pass2_started = ok;
     ok = ok && run_pass(&a, 2) && a.errors == 0;
     if (a.err_has) {
         fprintf(stderr, "      => [Error] %s\n", a.err_msg);
+    }
+    if (listing_stem != NULL) {
+        snprintf(lst_name, sizeof lst_name, "%s_Output.txt",
+                 out->out_name[0] != '\0' ? out->out_name : listing_stem);
+        listing = fopen(lst_name, "w");
+        if (listing == NULL) {
+            perror(lst_name);
+            ok = false;
+        }
+    }
+    if (pass2_started && listing != NULL) {
+        listing_write(listing, &a.lst);
     }
     if (ok && table_cols >= 0 && listing != NULL && !write_symbol_table(listing, &a, (size_t)table_cols)) {
         fprintf(stderr, "%s: cannot write symbol table\n", path);
         ok = false;
     }
+    if (listing != NULL && fclose(listing) != 0) {
+        fprintf(stderr, "%s: cannot write %s\n", path, lst_name);
+        ok = false;
+    }
 
     free_macros(&a);
+    listing_free(&a.lst);
     for (i = 0; i < a.nsyms; i++) {
         free(a.syms[i].text);
     }

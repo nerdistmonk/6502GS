@@ -66,13 +66,14 @@ typedef struct {
     uint8_t file_type;
 } Binary;
 
-/* Two passes over the source. Diagnostics go to stderr; the listing is
- * written to `listing` in the second pass. PUT and USE files are found beside
- * the source, and USE falls back to `macro_dir` when it is not NULL. A
- * table_cols of 0 or more appends the symbol tables to the listing with that
- * many entries per row (0 means 6); a negative value writes none. On
- * success *out owns its bytes. */
-bool assemble_source(const char *path, const char *macro_dir, FILE *listing, int table_cols, Binary *out);
+/* Two passes over the source. Diagnostics go to stderr. PUT and USE files are
+ * found beside the source, and USE falls back to `macro_dir` when it is not
+ * NULL. A table_cols of 0 or more appends the symbol tables to the listing
+ * with that many entries per row (0 means 6); a negative value writes none.
+ * When listing_stem is not NULL the listing goes to "<name>_Output.txt", where
+ * name is the first SAV or DSK name or else listing_stem, as merlin32 does.
+ * On success *out owns its bytes. */
+bool assemble_source(const char *path, const char *macro_dir, const char *listing_stem, int table_cols, Binary *out);
 void binary_free(Binary *bin);
 
 #endif
