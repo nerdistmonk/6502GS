@@ -55,10 +55,10 @@ bytes and listing.
 ## Resume here
 
 - Latest commit on `main`: the one titled "Match merlin32 link-file DSK, label,
-  and bare ORG rules" (`git log -1`). Uncommitted: none beyond this DESIGN.md
-  update. The three-module output-type probe matched merlin32 on all seven
-  `TYP` placements, so no code changed. Phases 0–5 (flat and OMF linking,
-  standalone REL) are done. `ctest` passes 71/71 on GCC Debug and ASan/UBSan.
+  and bare ORG rules" (`git log -1`). Uncommitted: the spec-audit fixes
+  (expressions, `$-N`, `!`/`|`, `DS \`, EQU display, CLI flags); see "Spec
+  audit" below. Phases 0–5 (flat and OMF linking, standalone REL) are done.
+  `ctest` passes 76/76 on GCC Debug and ASan/UBSan.
 - Next step: no open link questions remain. Pick the next item from Open
   questions or Deferred (disk image creation). Ask the user before any behavior
   change.
@@ -84,7 +84,9 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 ### Phase 1: Core 6502 assembler
 
 - [x] Line parser: label, opcode, operand, comment (Merlin four-column layout)
-- [x] Expression evaluator: left-to-right `+ - * /` and `! . &`, `$ %` and decimal literals, `'x'`/`"x"` chars, `*`, `#`/`<`/`>` operand prefixes (`@` is not a Merlin literal; merlin32 rejects it)
+- [x] Expression evaluator: left-to-right `+ - * /` and `! . &` at top level, `{ }` RPN precedence, comparisons `< > = #`, `$ %` and decimal literals, `'x'`/`"x"` chars, `*`, `#`/`<`/`>` operand prefixes (`@` is not a Merlin literal; merlin32 rejects it)
+  - `$-N` is atoi-style: leading decimal digits of the hex run, negated (`$-10` = -10, `$-9A` = -9, `$-A` = 0).
+  - Merlin quirk, reproduced: a `$` literal whose value is exactly -1 is an error in every context (`DB $-1`, `LDA #$-1`, `DS $-1`, `ORG $-1`). `$-2+1` and decimal `-1` are fine. Recorded in `tests/oracle/error_cases/neg_hex_one.s` and `cases/neg_hex.s`.
 - [x] 6502 opcode table and all addressing modes
 - [x] Two-pass symbol resolution and forward references (layout passes repeat until stable; forward EQUs are zero page, forward labels absolute)
 - [x] Directives: `ORG`, `EQU`, `DS`, `DFB`/`DB`, `DW`, `DA`, `HEX`, `ASC`, `DCI`, `END`
@@ -135,6 +137,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 - [x] `SAV`, `DSK`, `TYP` output hints (first name wins; `_FileInformation.txt` written)
 - [x] Symbol table output: `-v<N>` appends merlin32's numerical and alphabetical tables to the listing with N entries per row (`-v0` is 6; a bare `-v` writes none)
+  - `--verbose[N]` (or `--verbosN`, count read from offset 8) is the same as `-vN`; an exact `--verbos` writes no table. `-s[N]` prints the tables to stdout (needs a listing). A bare `-s` takes the most recent `-v<N>` count before it (default 6). `-h`/`--help` print usage. Probed against merlin32 over 22 flag combinations (`tests/oracle/run_symbols.sh`).
+  - Open: `-vX` (non-digit suffix) is rejected with usage; merlin32's behavior for it is not probed.
   - The tables go into `<stem>_Output.txt` after the listing, as merlin does. The oracle compares only the table text.
   - Labels print as `$` plus the low 16 bits at four digits. Names longer than 16 characters overflow their column, as merlin does.
   - Divergence: merlin orders label-based equates (`X1+k`) by an unexplained key. We sort all equates by value, with definition order on ties. Oracle cases use constant equates only.
@@ -166,6 +170,20 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] OMF v2.1 object output (standalone `REL` modules; byte-identical to merlin32)
 - [x] Linker and link scripts: stage 1 flat binary, stage 2 OMF v2.1 output with EXT/ENT across modules. The last `TYP` line picks flat (`$06`) or OMF (any other value, including none). Link rules and divergences are in `docs/USER_GUIDE.md`.
 
+## Spec audit
+
+Audit of phases 1–3 against `merlin32_clean_room_behavioral_specification.md`
+(black-box, checked against merlin32 byte for byte and in the listing).
+Fixed: `{ }` grouping and comparison operators (§9.4); `$-N` (§9.3); `##val`;
+`!`/`|` force-absolute prefix; `DS \` at a page boundary (emits 256 bytes, not
+1; `DS \,fill` form); EQU listing display `{text}` with nested names expanded;
+CLI `-s`, `-h`/`--help`, `--verbose`. Confirmed matches, no change needed: DCI,
+SEC+XCE MX, `:local` promotion, IF string compare, `IF MX`, macro opcode
+shadowing, left-to-right outside braces, STR over 255 rejected, nested PUT
+ignored, `]9` error, `STX $1234,Y` error.
+
+Not yet audited: link-file `BSZ`, §14.2 limits, and most of §5–§8 and §11–§13.
+
 ## References
 
 All paths are relative to the reference library at `/root/iigs-workspace/Reference_Materials/`.
@@ -180,7 +198,9 @@ All paths are relative to the reference library at `/root/iigs-workspace/Referen
 
 ## Open questions
 
-- Command-line interface: resolved. `asm816` mirrors merlin32's flags (`-m <dir>`, `-v<N>`) and adds `--version`.
+- Command-line interface: resolved. `asm816` mirrors merlin32's flags (`-m <dir>`, `-v<N>`, `-s<N>`, `--verbose<N>`, `-h`) and adds `--version`.
+- Open: is `-m` case-insensitive in merlin32, and what does merlin32 do with `-vX` (non-digit)? Not probed.
+- Open: the forced-absolute truncation warning (`!`/`|`, wide operands) goes to stderr; merlin32 prints nothing. Keep or suppress?
 - Merlin's `,X`/`,Y`/`,S` suffix on `JML`/`JMP` bracket operands (see Phase 4): resolved, keep rejecting. Matching it would silently drop the index.
 
 Link-rule probes against merlin32 (black-box; all resolved):
@@ -203,4 +223,4 @@ The binary is named `asm816`.
 
 Phases 1-5 are done when the oracle suites (assembly, error, symbol, and link)
 pass for 6502, 65C02, and 65C816 sources, and all tests run under `ctest` on
-Linux with GCC. Status: met (`ctest` 71/71, including all oracle suites).
+Linux with GCC. Status: met (`ctest` 76/76, including all oracle suites).

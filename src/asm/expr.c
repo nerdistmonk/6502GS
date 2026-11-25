@@ -118,6 +118,8 @@ static bool parse_name(Parser *ps, ExprValue *v)
     return true;
 }
 
+static bool parse_climb(Parser *ps, int minprio, ExprValue *acc);
+
 static bool parse_primary(Parser *ps, ExprValue *v)
 {
     bool negate = false;
@@ -134,9 +136,42 @@ static bool parse_primary(Parser *ps, ExprValue *v)
         v->ext[0] = '\0';
         ps->p++;
         break;
+    case '{':
+        /* A brace group is evaluated with operator precedence. */
+        ps->p++;
+        if (!parse_primary(ps, v) || !parse_climb(ps, 0, v)) {
+            return false;
+        }
+        if (*ps->p != '}') {
+            return set_err(ps, "missing '}'");
+        }
+        ps->p++;
+        break;
     case '$':
         ps->p++;
-        if (!parse_number(ps, 16, v)) {
+        /* merlin32 reads the hex-digit run after "$-" with atoi(), so only its
+         * leading decimal digits count: $-10 is -10 and $-A is 0. */
+        if (*ps->p == '-' && digit_value((unsigned char)ps->p[1], 16) >= 0) {
+            uint32_t n = 0;
+
+            ps->p++;
+            while (isdigit((unsigned char)*ps->p)) {
+                n = n * 10 + (uint32_t)(*ps->p - '0');
+                ps->p++;
+            }
+            while (digit_value((unsigned char)*ps->p, 16) >= 0) {
+                ps->p++;
+            }
+            v->value = (int32_t)(0u - n);
+            v->kind = REL_CONST;
+            v->ext[0] = '\0';
+            /* merlin32 uses -1 as its error value, so a literal of -1 is treated
+             * as unevaluable and reported like an undefined symbol. */
+            v->defined = v->value != -1;
+            if (!v->defined) {
+                v->value = 0;
+            }
+        } else if (!parse_number(ps, 16, v)) {
             return false;
         }
         break;
@@ -242,15 +277,77 @@ static bool apply_op(Parser *ps, char op, ExprValue *acc, ExprValue rhs)
     case '&':
         r = a & b;
         break;
+    case '<':
+        r = a < b;
+        break;
+    case '>':
+        r = a > b;
+        break;
+    case '=':
+        r = a == b;
+        break;
+    case '#':
+        r = a != b;
+        break;
     default:
         return set_err(ps, "unknown operator");
     }
-    combine_rel(op, acc, &rhs);
+    /* A comparison relocates like a difference. */
+    combine_rel(strchr("<>=#", op) != NULL ? '-' : op, acc, &rhs);
     acc->value = (int32_t)r;
     acc->defined = defined;
     return true;
 }
 
+/* Operator precedence used inside braces. Higher binds tighter. */
+static int op_prio(char op)
+{
+    switch (op) {
+    case '&':
+    case '.':
+    case '!':
+        return 3;
+    case '*':
+    case '/':
+        return 2;
+    case '+':
+    case '-':
+        return 1;
+    case '<':
+    case '>':
+    case '=':
+    case '#':
+        return 0;
+    default:
+        return -1;
+    }
+}
+
+/* Folds operators of priority >= minprio into acc. */
+static bool parse_climb(Parser *ps, int minprio, ExprValue *acc)
+{
+    for (;;) {
+        char op = *ps->p;
+        int prio = op_prio(op);
+        ExprValue rhs;
+
+        if (prio < 0 || prio < minprio) {
+            return true;
+        }
+        ps->p++;
+        if (!parse_primary(ps, &rhs)) {
+            return false;
+        }
+        if (op_prio(*ps->p) > prio && !parse_climb(ps, prio + 1, &rhs)) {
+            return false;
+        }
+        if (!apply_op(ps, op, acc, rhs)) {
+            return false;
+        }
+    }
+}
+
+/* Outside braces, operators apply strictly left to right. */
 bool expr_eval(const char *text, const ExprEnv *env, ExprValue *out, const char **err)
 {
     Parser ps = { text, env, NULL };
@@ -261,12 +358,31 @@ bool expr_eval(const char *text, const ExprEnv *env, ExprValue *out, const char 
     while (ok && *ps.p != '\0') {
         char op = *ps.p;
 
-        if (strchr("+-*/!.&", op) == NULL) {
+        if (strchr("+-*/!.&<>=#", op) == NULL) {
             ok = set_err(&ps, "unexpected character in expression");
         } else {
             ps.p++;
             ok = parse_primary(&ps, &rhs) && apply_op(&ps, op, &acc, rhs);
         }
+    }
+    if (!ok) {
+        *err = ps.err ? ps.err : "bad expression";
+        return false;
+    }
+    *out = acc;
+    return true;
+}
+
+/* Evaluates a whole expression with braces-style precedence, as EQU values
+ * are. */
+bool expr_eval_grouped(const char *text, const ExprEnv *env, ExprValue *out, const char **err)
+{
+    Parser ps = { text, env, NULL };
+    ExprValue acc = { 0, false, REL_CONST, "" };
+    bool ok = parse_primary(&ps, &acc) && parse_climb(&ps, 0, &acc);
+
+    if (ok && *ps.p != '\0') {
+        ok = set_err(&ps, "unexpected character in expression");
     }
     if (!ok) {
         *err = ps.err ? ps.err : "bad expression";

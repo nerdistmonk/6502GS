@@ -1,0 +1,9 @@
+ ORG $2000
+ DB $-10
+ DB $-2+1
+ DB $-9A
+ DB $-A
+ DW $-FFFF
+ DW $-ABCD
+ DB $-99
+ LDA #$-2

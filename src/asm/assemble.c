@@ -26,7 +26,9 @@ typedef struct {
     char shown[ASM_NAME_MAX + 2];
     size_t def_order;
     char *text;
-    /* A ] code label, listed as ozunid_N for the pass-2 generation oz_gen. */
+    /* The EQU value as the listing shows it: text in braces, with EQU names
+     * replaced by their own listing form. */
+    char *disp;
     bool oz_label;
     /* run_pass generation in which a ] label was last defined. */
     int oz_def_gen;
@@ -60,6 +62,8 @@ typedef struct {
     Form form;
     char index;
     char mod;
+    /* Set by a leading ! or |, which forces the absolute form. */
+    bool force_abs;
     char expr[ASM_LINE_MAX];
 } Operand;
 
@@ -647,6 +651,70 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
 }
 
 /* Keeps an EQU operand as written so the symbol table can print it. */
+static void buf_add(Buf *b, const char *s, size_t n);
+static void buf_init(Buf *b);
+static bool name_start(int c);
+static bool name_char(int c);
+
+/* Builds the listing form of an EQU value: the text in braces, where each
+ * name that is already an EQU is replaced by that EQU's listing form. Numbers
+ * and quoted text are copied unchanged. Returns NULL when out of memory. */
+static char *equ_display(const Asm *a, const char *text)
+{
+    Buf b;
+    const char *p = text;
+
+    buf_init(&b);
+    buf_add(&b, "{", 1);
+    while (*p != '\0') {
+        if (name_start((unsigned char)*p)) {
+            const char *start = p;
+            char tok[ASM_LINE_MAX];
+            char key[SYM_KEY_MAX];
+            Symbol *s;
+
+            while (name_char((unsigned char)*p)) {
+                p++;
+            }
+            snprintf(tok, sizeof tok, "%.*s", (int)(p - start), start);
+            s = make_key(a, tok, key, sizeof key) ? sym_find(a, key) : NULL;
+            if (s != NULL && s->is_equ && s->disp != NULL) {
+                buf_add(&b, s->disp, strlen(s->disp));
+            } else {
+                buf_add(&b, start, (size_t)(p - start));
+            }
+        } else if (*p == '$' || isdigit((unsigned char)*p)) {
+            const char *start = p;
+
+            p++;
+            while (isalnum((unsigned char)*p)) {
+                p++;
+            }
+            buf_add(&b, start, (size_t)(p - start));
+        } else if (*p == '\'' || *p == '"') {
+            const char *start = p;
+            char q = *p++;
+
+            while (*p != '\0' && *p != q) {
+                p++;
+            }
+            if (*p == q) {
+                p++;
+            }
+            buf_add(&b, start, (size_t)(p - start));
+        } else {
+            buf_add(&b, p, 1);
+            p++;
+        }
+    }
+    buf_add(&b, "}", 1);
+    if (b.oom) {
+        free(b.s);
+        return NULL;
+    }
+    return b.s;
+}
+
 static void set_equ_text(Asm *a, const char *name, const char *text)
 {
     char key[SYM_KEY_MAX];
@@ -667,6 +735,8 @@ static void set_equ_text(Asm *a, const char *name, const char *text)
         return;
     }
     memcpy(s->text, text, len + 1);
+    free(s->disp);
+    s->disp = equ_display(a, text);
 }
 
 /* Variables are not layout-checked like labels, so a sizing pass that
@@ -698,7 +768,7 @@ static bool vars_changed(const Asm *a)
     return false;
 }
 
-static bool eval_full(Asm *a, const char *text, ExprValue *ev)
+static bool eval_full(Asm *a, const char *text, bool grouped, ExprValue *ev)
 {
     ExprEnv env;
     const char *err = NULL;
@@ -707,7 +777,7 @@ static bool eval_full(Asm *a, const char *text, ExprValue *ev)
     env.ctx = a;
     env.pc = a->pc;
     env.rel = a->rel && !a->rel_abs;
-    if (!expr_eval(text, &env, ev, &err)) {
+    if (!(grouped ? expr_eval_grouped : expr_eval)(text, &env, ev, &err)) {
         diag(a, "%s", err);
         return false;
     }
@@ -719,7 +789,7 @@ static bool eval(Asm *a, const char *text, int32_t *value, bool *defined)
 {
     ExprValue ev;
 
-    if (!eval_full(a, text, &ev)) {
+    if (!eval_full(a, text, false, &ev)) {
         return false;
     }
     *value = ev.value;
@@ -728,9 +798,9 @@ static bool eval(Asm *a, const char *text, int32_t *value, bool *defined)
 }
 
 /* Pass 1 tolerates undefined symbols; pass 2 reports them. */
-static bool eval_operand_full(Asm *a, const char *text, ExprValue *ev)
+static bool eval_operand_mode(Asm *a, const char *text, bool grouped, ExprValue *ev)
 {
-    if (!eval_full(a, text, ev)) {
+    if (!eval_full(a, text, grouped, ev)) {
         return false;
     }
     if (!ev->defined) {
@@ -743,6 +813,11 @@ static bool eval_operand_full(Asm *a, const char *text, ExprValue *ev)
         }
     }
     return true;
+}
+
+static bool eval_operand_full(Asm *a, const char *text, ExprValue *ev)
+{
+    return eval_operand_mode(a, text, false, ev);
 }
 
 static bool eval_operand(Asm *a, const char *text, int32_t *value, bool *defined)
@@ -904,12 +979,15 @@ static void ds_directive(Asm *a, const SrcLine *ln)
     bool defined = false;
 
     if (!ln->has_operand || ln->operand[0] == '\\') {
-        if (ln->has_operand && ln->operand[1] != '\0') {
-            if (!eval_operand(a, ln->operand + 1, &fill, &defined)) {
-                return;
-            }
+        const char *f = ln->has_operand ? ln->operand + 1 : "";
+
+        if (*f == ',') {
+            f++;
         }
-        emit_fill(a, (0x100 - (a->pc & 0xFF)) & 0xFF, (uint8_t)(fill & 0xFF));
+        if (*f != '\0' && !eval_operand(a, f, &fill, &defined)) {
+            return;
+        }
+        emit_fill(a, 0x100 - (a->pc & 0xFF), (uint8_t)(fill & 0xFF));
         return;
     }
     if (!next_item(&p, item, sizeof item)) {
@@ -1276,6 +1354,9 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
     if (s[0] == '#') {
         o->form = F_IMM;
         p = s + 1;
+        while (*p == '#') {
+            p++;
+        }
         if (*p == '<' || *p == '>' || *p == '^') {
             o->mod = *p;
             p++;
@@ -1319,6 +1400,11 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
         return false;
     }
     o->form = F_DIR;
+    if (s[0] == '!' || s[0] == '|') {
+        o->force_abs = true;
+        s++;
+        n--;
+    }
     if (s[0] == '<' || s[0] == '>') {
         o->mod = s[0];
         s++;
@@ -1791,7 +1877,7 @@ static void instruction(Asm *a, const char *mnem, bool forced, const SrcLine *ln
         return;
     }
     a->last_eval.kind = REL_CONST;
-    if (encode_instruction(a, mnem, forced, &o, bytes, &size)) {
+    if (encode_instruction(a, mnem, forced || o.force_abs, &o, bytes, &size)) {
         if (a->rel && size > 1 && !branch_operand(mnem, &o)
             && !record_fixup(a, a->bin->len + 1, &a->last_eval, size - 1, reloc_shift(o.mod))) {
             return;
@@ -3181,34 +3267,6 @@ static bool pc_operand_pos(const char *op, const char *star)
 
 /* Writes the operand as the listing shows it. A '*' program counter gets its
  * own Empty row, labelled ozunid_N at the pre-line PC, before the instruction row. */
-/* EQU values written as a plain decimal or $hex literal are echoed as written. */
-static bool equ_literal(const char *text)
-{
-    const char *p = text;
-
-    if (text == NULL || *text == '\0') {
-        return false;
-    }
-    if (*p == '$') {
-        p++;
-        if (*p == '\0') {
-            return false;
-        }
-        for (; *p != '\0'; p++) {
-            if (!isxdigit((unsigned char)*p)) {
-                return false;
-            }
-        }
-        return true;
-    }
-    for (; *p != '\0'; p++) {
-        if (!isdigit((unsigned char)*p)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 static void list_operand(Asm *a, const ListRow *row, const char *op, Buf *out)
 {
     const char *p = op;
@@ -3274,16 +3332,16 @@ static void list_operand(Asm *a, const ListRow *row, const char *op, Buf *out)
                     buf_add(out, name, n);
                 }
             } else if (s != NULL && s->defined && s->is_equ) {
-                char value[32];
-                uint32_t u = (uint32_t)s->value & 0xFFFFFF;
-
-                if (equ_literal(s->text)) {
-                    snprintf(value, sizeof value, "{%s}", s->text);
+                if (s->disp != NULL) {
+                    buf_add(out, s->disp, strlen(s->disp));
                 } else {
+                    char value[32];
+                    uint32_t u = (uint32_t)s->value & 0xFFFFFF;
+
                     snprintf(value, sizeof value, "{$%0*lX}", u <= 0xFF ? 2 : u <= 0xFFFF ? 4 : 6,
                              (unsigned long)u);
+                    buf_add(out, value, strlen(value));
                 }
-                buf_add(out, value, strlen(value));
             } else if (s != NULL && name[0] == ':' && s->shown[0] != '\0') {
                 buf_add(out, s->shown, strlen(s->shown));
             } else {
@@ -3521,7 +3579,7 @@ static void assemble_statement(Asm *a, const char *text)
                 diag(a, "EQU needs a label");
             } else if (!ln.has_operand) {
                 diag(a, "EQU needs a value");
-            } else if (eval_operand_full(a, ln.operand, &ev)) {
+            } else if (eval_operand_mode(a, ln.operand, !var, &ev)) {
                 v = ev.value;
                 defined = ev.defined;
                 define_label_rel(a, ln.label, v, defined, true, &ev);
@@ -3767,6 +3825,7 @@ static void asm_free(Asm *a)
     listing_free(&a->lst);
     for (i = 0; i < a->nsyms; i++) {
         free(a->syms[i].text);
+        free(a->syms[i].disp);
     }
     free(a->syms);
     free(a->wide);
@@ -3809,7 +3868,7 @@ static bool assemble_passes(Asm *a, bool *pass2_started)
     return ok && a->errors == 0;
 }
 
-bool assemble_source(const char *path, const char *macro_dir, const char *listing_stem, int table_cols, Binary *out)
+bool assemble_source(const char *path, const char *macro_dir, const char *listing_stem, int table_cols, int console_cols, Binary *out)
 {
     Asm a;
     FILE *listing = NULL;
@@ -3856,6 +3915,11 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
         listing_write(listing, &a.lst);
     }
     if (ok && table_cols >= 0 && listing != NULL && !write_symbol_table(listing, &a, (size_t)table_cols)) {
+        fprintf(stderr, "%s: cannot write symbol table\n", path);
+        ok = false;
+    }
+    if (ok && console_cols >= 0 && listing_stem != NULL &&
+        !write_symbol_table(stdout, &a, (size_t)console_cols)) {
         fprintf(stderr, "%s: cannot write symbol table\n", path);
         ok = false;
     }

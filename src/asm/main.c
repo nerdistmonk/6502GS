@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,36 +9,81 @@
 #include "omf.h"
 
 #define PATH_BUF 256
+#define SYMBOL_COLUMNS 6
 
 static void usage(FILE *out)
 {
-    fprintf(out, "usage: asm816 [--version] [-m <macro-dir>] [-v<N>] <source.s>\n");
+    fprintf(out, "usage: asm816 [--version] [-h] [-m <macro-dir>] [-v[<N>]|--verbose[<N>]]\n");
+    fprintf(out, "              [-s[<N>]] <source.s>\n");
 }
 
-/* Parses merlin32's -v<N> flag. A bare -v is accepted and writes no table.
- * -v<N> appends the symbol tables with N entries per row. */
-static bool parse_table_flag(const char *arg, int *table_cols)
+/* Flags match case-insensitively, as merlin32's do. */
+static bool has_prefix_ci(const char *s, const char *prefix)
 {
-    const char *p = arg + 2;
-    long n = 0;
-
-    if (arg[0] != '-' || arg[1] != 'v') {
-        return false;
-    }
-    if (*p == '\0') {
-        return true;
-    }
-    for (; *p != '\0'; p++) {
-        if (*p < '0' || *p > '9') {
+    for (; *prefix != '\0'; s++, prefix++) {
+        if (tolower((unsigned char)*s) != tolower((unsigned char)*prefix)) {
             return false;
         }
-        n = n * 10 + (*p - '0');
+    }
+    return true;
+}
+
+static bool equals_ci(const char *s, const char *lit)
+{
+    return has_prefix_ci(s, lit) && s[strlen(lit)] == '\0';
+}
+
+/* Reads the leading decimal digits of s as a column count, as merlin32's atoi
+ * does. A zero or non-numeric start gives SYMBOL_COLUMNS. */
+static bool column_count(const char *s, int *cols)
+{
+    long n = 0;
+
+    for (; *s >= '0' && *s <= '9'; s++) {
+        n = n * 10 + (*s - '0');
         if (n > 255) {
             return false;
         }
     }
-    *table_cols = (int)n;
+    *cols = n == 0 ? SYMBOL_COLUMNS : (int)n;
     return true;
+}
+
+/* Parses -v[<N>], --verbose[<N>] and -s[<N>]. Any -v or --verbose turns on the
+ * listing; -v alone writes no table, and --verbose alone writes one. -s prints
+ * the tables to stdout, which needs a listing. A bare -s takes the count from
+ * the most recent -v<N> or --verbos<N> before it, as merlin32 does. Returns
+ * false for any other arg or a count over 255. */
+static bool parse_table_flag(const char *arg, bool *verbose, int *table_cols, int *console_cols)
+{
+    const char *p;
+
+    if (has_prefix_ci(arg, "-s")) {
+        if (arg[2] == '\0') {
+            *console_cols = *table_cols >= 0 ? *table_cols : SYMBOL_COLUMNS;
+            return true;
+        }
+        return column_count(arg + 2, console_cols);
+    }
+    if (has_prefix_ci(arg, "--verbos")) {
+        /* merlin32 matches the first eight characters and reads the count from
+         * offset 8. An exact eight-character flag gives a listing with no table. */
+        *verbose = true;
+        if (arg[8] == '\0') {
+            return true;
+        }
+        return column_count(arg + 8, table_cols);
+    }
+    if (has_prefix_ci(arg, "-v")) {
+        *verbose = true;
+        for (p = arg + 2; *p != '\0'; p++) {
+            if (!isdigit((unsigned char)*p)) {
+                return false;
+            }
+        }
+        return arg[2] == '\0' || column_count(arg + 2, table_cols);
+    }
+    return false;
 }
 
 /* Output names follow merlin32: the source basename without its extension,
@@ -133,6 +179,7 @@ int main(int argc, char **argv)
     const char *name;
     const char *macro_dir = NULL;
     int table_cols = -1;
+    int console_cols = -1;
     bool verbose = false;
     int i;
     Binary bin;
@@ -141,15 +188,19 @@ int main(int argc, char **argv)
         printf("asm816 %s\n", ASM816_VERSION);
         return 0;
     }
+    for (i = 1; i < argc; i++) {
+        if (equals_ci(argv[i], "-h") || equals_ci(argv[i], "--help")) {
+            usage(stdout);
+            return 0;
+        }
+    }
 
     for (i = 1; i < argc - 1; i++) {
         if (strcmp(argv[i], "-m") == 0 && i + 1 < argc - 1) {
             macro_dir = argv[++i];
-        } else if (!parse_table_flag(argv[i], &table_cols)) {
+        } else if (!parse_table_flag(argv[i], &verbose, &table_cols, &console_cols)) {
             usage(stderr);
             return 1;
-        } else {
-            verbose = true;
         }
     }
     if (argc < 2 || argv[argc - 1][0] == '-') {
@@ -169,7 +220,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "asm816: cannot derive output name from %s\n", src);
         return 1;
     }
-    if (!assemble_source(src, macro_dir, verbose ? stem : NULL, table_cols, &bin)) {
+    if (!assemble_source(src, macro_dir, verbose ? stem : NULL, table_cols, console_cols, &bin)) {
         return 1;
     }
 

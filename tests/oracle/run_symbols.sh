@@ -5,8 +5,9 @@
 # usage: run_symbols.sh <asm816> <merlin32> <merlin-library-dir> <case.s>
 #
 # Contract: merlin32 and asm816 write their tables to <stem>_Output.txt when
-# given -v<N>. Only the text from the "Symbol Table - Numerical Order" line to
-# the end of the file is compared.
+# given -v<N> or --verbose, and print them to stdout when given -s with -v.
+# Only the text from the "Symbol Table - Numerical Order" line to the end of
+# the output is compared.
 set -eu
 
 asm816=$1
@@ -27,3 +28,16 @@ for cols in 0 1 2 3 9 10; do
     sed -n '/^Symbol Table - Numerical Order$/,$p' "$work/${stem}_Output.txt" >"$work/ours.$cols"
     cmp "$work/oracle.$cols" "$work/ours.$cols"
 done
+
+# Bare --verbose writes the tables like -v0, and -s prints them to stdout after -v.
+(cd "$work" && "$merlin" --verbose "$lib" "$stem.s" >/dev/null </dev/null)
+sed -n '/^Symbol Table - Numerical Order$/,$p' "$work/${stem}_Output.txt" >"$work/oracle.long"
+(cd "$work" && "$asm816" --verbose -m "$lib" "$stem.s")
+sed -n '/^Symbol Table - Numerical Order$/,$p' "$work/${stem}_Output.txt" >"$work/ours.long"
+cmp "$work/oracle.long" "$work/ours.long"
+
+(cd "$work" && "$merlin" -v3 -s "$lib" "$stem.s" </dev/null) |
+    sed -n '/^Symbol Table - Numerical Order$/,$p' >"$work/oracle.console"
+(cd "$work" && "$asm816" -v3 -s -m "$lib" "$stem.s") |
+    sed -n '/^Symbol Table - Numerical Order$/,$p' >"$work/ours.console"
+cmp "$work/oracle.console" "$work/ours.console"

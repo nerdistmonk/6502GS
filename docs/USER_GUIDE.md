@@ -28,15 +28,18 @@ cmake -S . -B build -DMERLIN32_BIN=/path/to/merlin32 -DMERLIN32_LIB=/path/to/Lib
 ## Command line
 
 ```
-asm816 [--version] [-m <macro-dir>] [-v[N]] <source.s>
+asm816 [--version] [-h] [-m <macro-dir>] [-v[N]|--verbose[N]] [-s[N]] <source.s>
 ```
 
 | Option | Meaning |
 |---|---|
 | `--version` | Print the version and exit. |
+| `-h`, `--help` | Print the usage text to stdout and exit. |
 | `-m <dir>` | Macro library directory, searched by `USE` after the source directory. |
-| `-v` | Write a listing to `<stem>_Output.txt`. |
+| `-v` | Write a listing to `<stem>_Output.txt`, with no symbol tables. |
 | `-vN` | As `-v`, and append the symbol tables with N entries per row. `-v0` means 6. |
+| `--verbose`, `--verbosN` | As `-vN`. Bare `--verbose` uses 6 entries per row. Only the first eight characters are checked, and the count is read from the rest, as in merlin32. |
+| `-s`, `-sN` | Print the symbol tables to stdout. Needs a listing (`-v` or `--verbose`). Bare `-s` uses the count from the most recent `-vN` or `--verbosN` before it, or 6 if there is none. `-s0` and non-numeric suffixes mean 6. |
 
 The source file must be the last argument.
 
@@ -77,9 +80,19 @@ Merlin's four-column layout: label, opcode, operand, comment.
 - Decimal, `$` hexadecimal, and `%` binary literals.
 - Character constants `'x'` and `"x"`.
 - `*` is the current program counter.
-- Operators are evaluated left to right: `+ - * /` and `! . &`.
+- Top-level operators are evaluated left to right: `+ - * /` and `! . &`.
+- Inside `{ }` (and in `EQU` values, which are grouped automatically), operators
+  use Merlin's precedence: `& . !` bind tighter than `* /`, which bind tighter
+  than `+ -`, which bind tighter than comparisons. Comparisons `< > = #`
+  evaluate to 1 or 0.
+- `$-N` is a negated decimal number. The leading decimal digits after `$-`
+  are negated and the rest of the hex-digit run is ignored, so `$-10` is -10,
+  `$-9A` is -9, and `$-A` is 0. Merlin also rejects a `$` literal whose value
+  is exactly -1 (`DB $-1`, `LDA #$-1`), which asm816 reproduces. Use `-1` for
+  the decimal value.
 - `#`, `<`, and `>` prefixes select immediate, low byte, and high byte, or force
-  long addressing (`>$E10000`).
+  long addressing (`>$E10000`). `!` and `|` before an operand force absolute
+  addressing, truncated to 16 bits.
 - `@` is not a Merlin literal and is rejected.
 
 ### Addressing and opcodes

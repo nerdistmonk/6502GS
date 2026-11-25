@@ -52,6 +52,10 @@ typedef struct {
  * returns false and sets *err to a static message. */
 bool expr_eval(const char *text, const ExprEnv *env, ExprValue *out, const char **err);
 
+/* Evaluates an EQU value, where {...} precedence applies to the whole text
+ * (& . ! over * / over + - over comparisons). */
+bool expr_eval_grouped(const char *text, const ExprEnv *env, ExprValue *out, const char **err);
+
 typedef enum {
     AM_IMP,
     AM_ACC,
@@ -106,10 +110,12 @@ typedef struct {
  * found beside the source, and USE falls back to `macro_dir` when it is not
  * NULL. A table_cols of 0 or more appends the symbol tables to the listing
  * with that many entries per row (0 means 6); a negative value writes none.
+ * A console_cols of 0 or more also prints the tables to stdout, but only when
+ * listing_stem is not NULL, as merlin32 does with -s and -v.
  * When listing_stem is not NULL the listing goes to "<name>_Output.txt", where
  * name is the first SAV or DSK name or else listing_stem, as merlin32 does.
  * On success *out owns its bytes. */
-bool assemble_source(const char *path, const char *macro_dir, const char *listing_stem, int table_cols, Binary *out);
+bool assemble_source(const char *path, const char *macro_dir, const char *listing_stem, int table_cols, int console_cols, Binary *out);
 void binary_free(Binary *bin);
 
 /* A label exported by ENT or imported by EXT. */
