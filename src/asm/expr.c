@@ -59,6 +59,8 @@ static bool parse_number(Parser *ps, int base, ExprValue *v)
     ps->p = p;
     v->value = (int32_t)n;
     v->defined = true;
+    v->kind = REL_CONST;
+    v->ext[0] = '\0';
     return true;
 }
 
@@ -77,6 +79,8 @@ static bool parse_char(Parser *ps, ExprValue *v)
     }
     v->value = (quote == '"') ? (c | 0x80) : (c & 0x7F);
     v->defined = true;
+    v->kind = REL_CONST;
+    v->ext[0] = '\0';
     return true;
 }
 

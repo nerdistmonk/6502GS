@@ -16,11 +16,12 @@ CMake + GCC.
 
 ## Scope
 
-In scope (Phase 1-4):
+In scope (Phases 1-5):
 
 - Assembler: Merlin source dialect, 6502 / 65C02 / 65C816 instruction sets.
-- Output: flat binary, listing file, symbol table.
+- Output: flat binary, listing file, symbol table, OMF v2.1 object files.
 - Merlin directives, conditionals, loops, macros, and variables.
+- Linker: flat and OMF link files with EXT/ENT across modules.
 
 Deferred (later phases):
 
@@ -37,10 +38,13 @@ Not in scope:
 ```
 src/asm/assemble.c  passes, PUT/USE, macros, LUP, conditionals, symbols, emitter
 src/asm/line.c      line parser (label, opcode, operand, comment)
-src/asm/expr.c      expression evaluator
+src/asm/expr.c      expression evaluator and relocation kinds
 src/asm/opcodes.c   opcode tables
 src/asm/listing.c   listing rows and byte formatting
-src/asm/main.c      command-line front end and output file naming
+src/asm/fileinfo.c  _FileInformation.txt
+src/asm/omf.c       OMF v2.1 object encoder
+src/asm/link.c      link files (flat and OMF), DSK/ORG/ASM/SNA/TYP directives
+src/asm/main.c      command-line front end, link mode, and output file naming
 tests/              CTest cases; oracle comparisons in tests/oracle/
 ```
 
@@ -50,7 +54,7 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `4408a7d` (Phase 5 stage 2). Phases 0–4 and Phase 5
+- Latest commit on `main`: `aacef6a` (docs for Phase 5 stage 2). Phases 0–5
   (flat and OMF linking, standalone REL) are done.
 - Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
   Oracle tests need `-DMERLIN32_BIN=/root/merlin32/Source/merlin32
@@ -88,7 +92,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] 65C816 opcodes, long addressing (`>` prefix, `JML`/`JSL`), `[dp]`, `[dp],Y`, stack-relative, block moves, `BRL`/`PER`, `REP`/`SEP` immediate width
 - [x] `MX` directive (`%00`–`%11` or `0`–`3`; width follows source order, including across branches, as merlin32 does)
 - [x] `XC` accepted as a no-op; merlin32 accepts 65C02 opcodes without it, and `XC OFF` is also accepted
-- [x] Directives: `REL` (writes an OMF v2.1 object file in Phase 5)
+- [x] Directives: `REL` (writes an OMF v2.1 object file; see Phase 5)
 - [x] Directives: `ADR`, `ADRL`, `DUM`/`DEND`
 - [x] Oracle tests for 65C816 programs (`m816_opcodes`, `m816_mx`, `adr_directives`, `dum_dend`)
 
@@ -151,7 +155,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Not matched: merlin32 ignores a `,X`, `,Y`, or `,S` suffix on `JML`/`JMP` bracket operands. `JML [$1234,X]` assembles as `DC 34 12`, like `JML [$1234]`. We reject these forms. A non-register suffix such as `,garbage` is an error in merlin32 too.
 - [x] Documentation: user guide (`docs/USER_GUIDE.md`) and dialect differences from merlin32
 
-### Phase 5 (later): OMF and linking
+### Phase 5: OMF and linking
 
 - [x] OMF v2.1 object output (standalone `REL` modules; byte-identical to merlin32)
 - [x] Linker and link scripts: stage 1 flat binary, stage 2 OMF v2.1 output with EXT/ENT across modules. The last `TYP` line picks flat (`$06`) or OMF (any other value, including none). Link rules and divergences are in `docs/USER_GUIDE.md`.
@@ -177,6 +181,6 @@ All paths are relative to the reference library at `/root/iigs-workspace/Referen
 
 The binary is named `asm816`.
 
-Phases 1-4 are done when the oracle suite passes for 6502, 65C02, and
-65C816 sources, and all tests run under `ctest` on Linux with GCC. Status:
-met (`ctest` 53/53, including the oracle suite).
+Phases 1-5 are done when the oracle suites (assembly, error, symbol, and link)
+pass for 6502, 65C02, and 65C816 sources, and all tests run under `ctest` on
+Linux with GCC. Status: met (`ctest` 65/65, including all oracle suites).
