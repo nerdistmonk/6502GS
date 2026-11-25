@@ -71,9 +71,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 - [x] 65C02 opcodes and addressing modes (zero-page indirect, `(abs,X)` JMP, `BRA`, `STZ`, `TSB`/`TRB`, `INC A`/`DEC A`, `PHX`/`PHY`/`PLX`/`PLY`, `WAI`/`STP`)
 - [x] 65C816 opcodes, long addressing (`>` prefix, `JML`/`JSL`), `[dp]`, `[dp],Y`, stack-relative, block moves, `BRL`/`PER`, `REP`/`SEP` immediate width
-- [ ] `XC`, `MX`, and width tracking across branches
+- [x] `MX` directive (`%00`–`%11` or `0`–`3`; width follows source order, including across branches, as merlin32 does)
+- [ ] `XC` (accepted but not enforced; merlin32 accepts 65C02 opcodes without it)
 - [ ] Directives: `ADR`, `ADRL`, `REL`, `DUM`/`DEND`
-- [x] Oracle tests for 65C816 programs (`m816_opcodes`)
+- [x] Oracle tests for 65C816 programs (`m816_opcodes`, `m816_mx`)
 
 ### Phase 3: Control flow and text
 

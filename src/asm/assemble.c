@@ -967,6 +967,27 @@ static void instruction(Asm *a, const char *mnem, bool forced, const SrcLine *ln
     }
 }
 
+/* Bit 1 set = accumulator 8-bit, bit 0 set = index 8-bit (merlin32 behavior). */
+static void mx_directive(Asm *a, const SrcLine *ln)
+{
+    int32_t v = 0;
+    bool defined = false;
+
+    if (!ln->has_operand) {
+        diag(a, "MX needs an operand");
+        return;
+    }
+    if (!eval_operand(a, ln->operand, &v, &defined)) {
+        return;
+    }
+    if (v < 0 || v > 3) {
+        diag(a, "MX value out of range");
+        return;
+    }
+    a->acc16 = !(v & 2);
+    a->idx16 = !(v & 1);
+}
+
 static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
 {
     if (strcmp(name, "ORG") == 0) {
@@ -985,6 +1006,8 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         text_directive(a, ln, true);
     } else if (strcmp(name, "END") == 0) {
         a->ended = true;
+    } else if (strcmp(name, "MX") == 0) {
+        mx_directive(a, ln);
     } else if (strcmp(name, "LONGA") == 0 || strcmp(name, "LONGI") == 0) {
         /* merlin32 accepts these and ignores them; they do not change width. */
     } else {
