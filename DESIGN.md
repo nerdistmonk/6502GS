@@ -97,7 +97,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Listing line numbers shift after include expansion (not yet matched to merlin).
   - Not yet probed: absolute paths, and an unterminated `MAC` at end of file.
 - [x] Macro terminator: `EOM` or `<<<` (merlin's `Macros.s` uses `<<<`)
-- [ ] Text directives: `STR`, `FLS`, `REV`, `INV`, `KBD`
+- [x] Text directives: `ASC`, `DCI`, `STR`, `FLS`, `REV`, `INV`, `KBD`
+  - Merlin differs from the manual, and merlin wins: `DCI` inverts the high bit of the last byte even when a hex suffix follows; `STR`'s length byte counts the hex suffix; `INV` and `FLS` mask the hex suffix too; `FLS` accepts only `$20`-`$5F` string characters; `REV` rejects a hex suffix.
+  - `KBD` sets its label to the current PC when no key is read (merlin's behavior with no input). The prompt operand is ignored.
+  - Not yet probed: `STR` over 255 bytes (we diagnose it), and whether `KBD` with a label-less line errors in merlin (we diagnose it).
 - [ ] Listing controls: `LST`, `PAG`, `TR`, `EXP`, `ERR`
 
 ### Phase 4: Output and completeness

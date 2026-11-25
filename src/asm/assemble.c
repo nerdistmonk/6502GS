@@ -395,29 +395,38 @@ static int hex_value(int c)
 }
 
 /* Hex pairs, adjacent or comma-separated. Diagnoses malformed digits. */
-static void emit_hex(Asm *a, const char *s)
+static bool hex_decode(Asm *a, const char *s, uint8_t *buf, size_t *n)
 {
     size_t i = 0;
     size_t len = strlen(s);
 
+    *n = 0;
     while (i < len) {
-        uint8_t b;
-
         if (i > 0 && s[i] == ',') {
             i++;
             if (i >= len || s[i] == ',') {
                 diag(a, "bad comma in hex data");
-                return;
+                return false;
             }
             continue;
         }
         if (i + 1 >= len || !isxdigit((unsigned char)s[i]) || !isxdigit((unsigned char)s[i + 1])) {
             diag(a, "hex data needs digit pairs");
-            return;
+            return false;
         }
-        b = (uint8_t)(hex_value((unsigned char)s[i]) * 16 + hex_value((unsigned char)s[i + 1]));
-        emit(a, &b, 1);
+        buf[(*n)++] = (uint8_t)(hex_value((unsigned char)s[i]) * 16 + hex_value((unsigned char)s[i + 1]));
         i += 2;
+    }
+    return true;
+}
+
+static void emit_hex(Asm *a, const char *s)
+{
+    uint8_t buf[ASM_LINE_MAX];
+    size_t n;
+
+    if (hex_decode(a, s, buf, &n)) {
+        emit(a, buf, (int)n);
     }
 }
 
@@ -625,15 +634,25 @@ static void hex_directive(Asm *a, const SrcLine *ln)
     emit_hex(a, ln->operand);
 }
 
-/* ASC/DCI: a '"' delimiter sets the high bit, a '\'' delimiter clears it.
- * DCI inverts the high bit of the last character. An optional hex suffix
- * follows the closing delimiter or a backslash. */
-static void text_directive(Asm *a, const SrcLine *ln, bool inverted_last)
+enum text_kind { TEXT_ASC, TEXT_DCI, TEXT_STR, TEXT_INV, TEXT_FLS, TEXT_REV };
+
+/* Shared by ASC, DCI, STR, INV, FLS, and REV. A '"' delimiter sets the high
+ * bit of each character and a '\'' delimiter clears it. An optional hex
+ * suffix follows the closing delimiter or a backslash. The bytes are built
+ * in a buffer, then transformed to match merlin32:
+ *   DCI  inverts the high bit of the last byte, including a hex suffix.
+ *   STR  prefixes a length byte that counts the hex suffix too.
+ *   INV  masks every byte with $3F, including a hex suffix.
+ *   FLS  takes only $20-$5F characters and masks every byte with $7F.
+ *   REV  reverses the string and rejects a hex suffix. */
+static void text_directive(Asm *a, const SrcLine *ln, enum text_kind kind)
 {
+    uint8_t buf[ASM_LINE_MAX];
     const char *s = ln->operand;
     const char *end;
     const char *rest;
     size_t len;
+    size_t n;
     size_t i;
     char delim;
     bool high;
@@ -662,19 +681,69 @@ static void text_directive(Asm *a, const SrcLine *ln, bool inverted_last)
     high = delim == '"';
     for (i = 0; i < len; i++) {
         unsigned char c = (unsigned char)s[1 + i];
-        uint8_t b = high ? (uint8_t)(c | 0x80) : (uint8_t)(c & 0x7F);
 
-        if (inverted_last && i == len - 1) {
-            b ^= 0x80;
+        if (kind == TEXT_FLS && (c < 0x20 || c > 0x5F)) {
+            diag(a, "FLS string character out of range");
+            return;
         }
-        emit(a, &b, 1);
+        buf[i] = high ? (uint8_t)(c | 0x80) : (uint8_t)(c & 0x7F);
     }
+    if (kind == TEXT_REV) {
+        for (i = 0; i < len / 2; i++) {
+            uint8_t t = buf[i];
+
+            buf[i] = buf[len - 1 - i];
+            buf[len - 1 - i] = t;
+        }
+    }
+    n = len;
     if (*rest == ',' || *rest == '\\') {
         rest++;
     }
     if (*rest != '\0') {
-        emit_hex(a, rest);
+        size_t hn;
+
+        if (kind == TEXT_REV) {
+            diag(a, "REV takes no hex suffix");
+            return;
+        }
+        if (!hex_decode(a, rest, buf + n, &hn)) {
+            return;
+        }
+        n += hn;
     }
+
+    switch (kind) {
+    case TEXT_DCI:
+        if (n > 0) {
+            buf[n - 1] ^= 0x80;
+        }
+        break;
+    case TEXT_INV:
+        for (i = 0; i < n; i++) {
+            buf[i] &= 0x3F;
+        }
+        break;
+    case TEXT_FLS:
+        for (i = 0; i < n; i++) {
+            buf[i] &= 0x7F;
+        }
+        break;
+    case TEXT_STR:
+        if (n > 255) {
+            diag(a, "STR longer than 255 bytes");
+            return;
+        }
+        {
+            uint8_t count = (uint8_t)n;
+
+            emit(a, &count, 1);
+        }
+        break;
+    default:
+        break;
+    }
+    emit(a, buf, (int)n);
 }
 
 static bool set_expr(Asm *a, Operand *o, const char *src, size_t n)
@@ -1202,9 +1271,17 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
     } else if (strcmp(name, "HEX") == 0) {
         hex_directive(a, ln);
     } else if (strcmp(name, "ASC") == 0) {
-        text_directive(a, ln, false);
+        text_directive(a, ln, TEXT_ASC);
     } else if (strcmp(name, "DCI") == 0) {
-        text_directive(a, ln, true);
+        text_directive(a, ln, TEXT_DCI);
+    } else if (strcmp(name, "STR") == 0) {
+        text_directive(a, ln, TEXT_STR);
+    } else if (strcmp(name, "INV") == 0) {
+        text_directive(a, ln, TEXT_INV);
+    } else if (strcmp(name, "FLS") == 0) {
+        text_directive(a, ln, TEXT_FLS);
+    } else if (strcmp(name, "REV") == 0) {
+        text_directive(a, ln, TEXT_REV);
     } else if (strcmp(name, "ADR") == 0) {
         data_directive(a, ln, 3);
     } else if (strcmp(name, "ADRL") == 0) {
@@ -1259,8 +1336,9 @@ static bool is_conditional(const char *name)
 static bool directive_known(const char *name)
 {
     static const char *const names[] = {
-        "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "ADR", "ADRL",
-        "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "EQU", "=", "DO", "IF", "ELSE", "FIN",
+        "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "STR", "INV", "FLS", "REV",
+        "ADR", "ADRL", "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "EQU", "=", "KBD",
+        "DO", "IF", "ELSE", "FIN",
     };
     size_t i;
 
@@ -2175,6 +2253,14 @@ static void assemble_statement(Asm *a, const char *text)
                 diag(a, "EQU needs a value");
             } else if (eval_operand(a, ln.operand, &v, &defined)) {
                 define_label(a, ln.label, v, defined, true);
+            }
+        } else if (strcmp(name, "KBD") == 0) {
+            /* merlin32 reads a key only interactively. With no key it sets
+             * the label to the current PC, so the prompt operand is ignored. */
+            if (!ln.has_label) {
+                diag(a, "KBD needs a label");
+            } else {
+                define_label(a, ln.label, a->pc, true, false);
             }
         } else {
             if (ln.has_label) {
