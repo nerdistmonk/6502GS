@@ -36,9 +36,13 @@ Not in scope:
 ## Architecture
 
 ```
-src/asm/        lexer, expression evaluator, opcode tables, parser, emitter
-src/asm/driver  command-line front end (assemble a file, write outputs)
-tests/          unit tests and oracle-comparison cases
+src/asm/assemble.c  passes, PUT/USE, macros, LUP, conditionals, symbols, emitter
+src/asm/line.c      line parser (label, opcode, operand, comment)
+src/asm/expr.c      expression evaluator
+src/asm/opcodes.c   opcode tables
+src/asm/listing.c   listing rows and byte formatting
+src/asm/main.c      command-line front end and output file naming
+tests/              CTest cases; oracle comparisons in tests/oracle/
 ```
 
 Pipeline: read source → expand `PUT`/`USE` and macros → tokenize lines →
@@ -109,7 +113,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 - [x] `SAV`, `DSK`, `TYP` output hints (first name wins; `_FileInformation.txt` written)
 - [x] Symbol table output: `-v<N>` appends merlin32's numerical and alphabetical tables to the listing with N entries per row (`-v0` is 6; a bare `-v` writes none)
-  - We write the tables into the `.lst` rather than a separate `<stem>_Output.txt` as merlin does. The oracle compares only the table text.
+  - The tables go into `<stem>_Output.txt` after the listing, as merlin does. The oracle compares only the table text.
   - Labels print as `$` plus the low 16 bits at four digits. Names longer than 16 characters overflow their column, as merlin does.
   - Divergence: merlin orders label-based equates (`X1+k`) by an unexplained key. We sort all equates by value, with definition order on ties. Oracle cases use constant equates only.
   - Variables (`]x`) are left out. Local labels print as `_name`.
