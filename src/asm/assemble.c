@@ -1318,6 +1318,8 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
     } else if (strcmp(name, "LST") == 0 || strcmp(name, "PAG") == 0
         || strcmp(name, "TR") == 0 || strcmp(name, "EXP") == 0) {
         /* Listing controls. They change only merlin32's listing, not the binary. */
+    } else if (strcmp(name, "XC") == 0) {
+        /* merlin32 accepts XC and does not enforce 65C02 opcodes without it. */
     } else if (strcmp(name, "ERR") == 0) {
         err_directive(a, ln);
     } else {
@@ -1362,7 +1364,7 @@ static bool directive_known(const char *name)
     static const char *const names[] = {
         "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "STR", "INV", "FLS", "REV",
         "ADR", "ADRL", "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "LST", "PAG", "TR", "EXP",
-        "ERR", "EQU", "=", "KBD",
+        "ERR", "XC", "EQU", "=", "KBD",
         "DO", "IF", "ELSE", "FIN",
     };
     size_t i;
