@@ -86,7 +86,7 @@ static bool parse_name(Parser *ps, ExprValue *v)
     const char *p = ps->p;
     size_t n = 0;
 
-    if (*p == ':') {
+    if (*p == ':' || *p == ']') {
         name[n++] = *p++;
     }
     if (!is_name_start((unsigned char)*p)) {

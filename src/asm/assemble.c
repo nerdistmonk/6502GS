@@ -16,6 +16,9 @@ typedef struct {
     bool is_equ;
     int def_line;
     int seen;
+    /* Variable value at the start of the current sizing pass. */
+    int32_t snap_value;
+    bool snap_defined;
 } Symbol;
 
 typedef enum {
@@ -170,8 +173,9 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
 {
     char key[SYM_KEY_MAX];
     Symbol *s;
+    bool var = name[0] == ']';
 
-    if (name[0] != ':') {
+    if (name[0] != ':' && !var) {
         snprintf(a->scope, sizeof a->scope, "%s", name);
     }
     if (!make_key(a, name, key, sizeof key)) {
@@ -185,6 +189,14 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
             diag(a, "out of memory");
             return;
         }
+    }
+    /* Variables may be redefined at will; their layout effect is checked
+     * per pass by vars_changed(). */
+    if (var) {
+        s->value = value;
+        s->defined = defined;
+        s->is_equ = true;
+        return;
     }
     if (s->def_line == 0) {
         s->def_line = a->line_no;
@@ -204,6 +216,35 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
     if (!equ) {
         s->seen = a->iter;
     }
+}
+
+/* Variables are not layout-checked like labels, so a sizing pass that
+ * leaves any variable with a different value than it started with needs
+ * another pass. */
+static void snapshot_vars(Asm *a)
+{
+    size_t i;
+
+    for (i = 0; i < a->nsyms; i++) {
+        if (a->syms[i].key[0] == ']') {
+            a->syms[i].snap_value = a->syms[i].value;
+            a->syms[i].snap_defined = a->syms[i].defined;
+        }
+    }
+}
+
+static bool vars_changed(const Asm *a)
+{
+    size_t i;
+
+    for (i = 0; i < a->nsyms; i++) {
+        const Symbol *s = &a->syms[i];
+
+        if (s->key[0] == ']' && (s->value != s->snap_value || s->defined != s->snap_defined)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool eval(Asm *a, const char *text, int32_t *value, bool *defined)
@@ -1362,7 +1403,11 @@ bool assemble_source(const char *path, FILE *listing, Binary *out)
     ok = true;
     for (a.iter = 1; ok; a.iter++) {
         a.changed = false;
+        snapshot_vars(&a);
         ok = run_pass(&a, 1);
+        if (ok && vars_changed(&a)) {
+            a.changed = true;
+        }
         if (!ok || !a.changed) {
             break;
         }
