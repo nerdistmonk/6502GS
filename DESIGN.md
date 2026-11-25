@@ -113,7 +113,14 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Divergence: merlin orders label-based equates (`X1+k`) by an unexplained key. We sort all equates by value, with definition order on ties. Oracle cases use constant equates only.
   - Variables (`]x`) are left out. Local labels print as `_name`.
 - [ ] Full listing parity for the oracle test suite
-- [ ] Error-message parity for common mistakes
+- [x] Error-message parity for common mistakes
+  - Errors print to stderr as `      => [Error] <text>`, the same form merlin32 uses on stdout. Assembly stops reporting after the first error, which is the lowest-ranked stage (merlin's ordering, approximated).
+  - Mapped to merlin text: unknown line, mode/element decode, undefined bracket operand, bad jump, bad HEX, DS negative and over 64 KB, undefined ORG/DS/DB/ERR, ERR nonzero, MX range, duplicate label, missing and extra FIN, missing main source.
+  - Divergence: other errors keep our wording in merlin's line format (`<text> (line N, file 'F').`).
+  - Divergence: merlin can print several errors in one run. We print one, so a pair such as an unknown line plus a missing FIN reports only the first.
+  - Divergence: duplicate-label messages name the main source for both files, because includes are flattened before assembly.
+  - Accept/reject differences are not changed (for example bare `DB`, `DW $12345`, and long labels).
+  - Covered by `tests/oracle/error_cases/` (`run_errors.sh`), one error per file.
 - [ ] Documentation: user guide and dialect differences from merlin32
 
 ### Phase 5 (later): OMF and linking
@@ -136,7 +143,6 @@ All paths are relative to the reference library at `/root/iigs-refs/`.
 ## Open questions
 
 - Command-line interface: mirror merlin32 flags, or a new CLI?
-- How strictly to match merlin32 error text versus our own messages?
 
 ## Done criteria
 

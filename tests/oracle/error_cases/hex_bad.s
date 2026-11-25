@@ -1,0 +1,3 @@
+ ORG $2000
+ HEX 1G
+ RTS

@@ -1,0 +1,4 @@
+ ORG $2000
+LBL NOP
+LBL NOP
+ RTS

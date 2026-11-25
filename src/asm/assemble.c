@@ -80,6 +80,27 @@ typedef struct {
     size_t next;
 } Frame;
 
+/* The stage at which merlin32 reports an error. Pass 2 keeps only the error with
+ * the lowest rank, so the one message printed matches merlin32's first message. */
+enum err_rank {
+    RANK_OPEN,
+    RANK_UNKNOWN,
+    RANK_MX,
+    RANK_FIN,
+    RANK_DUP_LABEL,
+    RANK_MODE,
+    RANK_DATA_FORMAT,
+    RANK_EVAL,
+    RANK_ERR,
+    RANK_DATA_BUILD,
+    RANK_JUMP,
+    RANK_SIZE,
+    RANK_OTHER
+};
+
+/* Which directive or instruction the current statement is, for undefined-symbol messages. */
+enum err_ctx { CTX_NONE, CTX_INSTR, CTX_ORG, CTX_DS, CTX_DATA, CTX_ERR };
+
 typedef struct {
     const char *path;
     /* Directory searched by USE when a file is not beside the source; may be NULL. */
@@ -135,22 +156,208 @@ typedef struct {
     /* Per-pass instruction count; indexes wide[] so each instruction has its own slot. */
     size_t wide_seq;
     size_t ndefs;
+    /* The first error recorded at the lowest rank, already in merlin32's text. */
+    bool err_has;
+    int err_rank;
+    char err_msg[4 * ASM_LINE_MAX + 256];
+    enum err_ctx ctx;
+    /* The statement being assembled; NULL between statements. */
+    const SrcLine *stmt;
+    const char *stmt_text;
 } Asm;
 
-static void diag(Asm *a, const char *fmt, ...)
+/* Keeps the lowest-ranked error; the first one seen wins a tie. Callers in
+ * pass 1 must not reach here, except for a source file that cannot be opened. */
+static void record_v(Asm *a, int rank, const char *fmt, va_list ap)
+{
+    a->errors++;
+    if (a->err_has && a->err_rank <= rank) {
+        return;
+    }
+    a->err_has = true;
+    a->err_rank = rank;
+    vsnprintf(a->err_msg, sizeof a->err_msg, fmt, ap);
+}
+
+static void record(Asm *a, int rank, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    record_v(a, rank, fmt, ap);
+    va_end(ap);
+}
+
+static void report(Asm *a, int rank, const char *fmt, ...)
 {
     va_list ap;
 
     if (a->pass != 2) {
         return;
     }
-    a->errors++;
-    fprintf(stderr, "%s:%d: ", a->path, a->line_no);
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    record_v(a, rank, fmt, ap);
     va_end(ap);
-    fputc('\n', stderr);
 }
+
+/* An error without a merlin32 template keeps our wording, in merlin32's location form. */
+static void diag(Asm *a, const char *fmt, ...)
+{
+    char text[ASM_LINE_MAX + 256];
+    va_list ap;
+
+    if (a->pass != 2) {
+        return;
+    }
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    report(a, RANK_OTHER, "%s (line %d, file '%s').", text, a->line_no, a->path);
+}
+
+static const char *stmt_opcode(const Asm *a)
+{
+    return a->stmt != NULL ? a->stmt->opcode : "";
+}
+
+static const char *stmt_operand(const Asm *a)
+{
+    return (a->stmt != NULL && a->stmt->has_operand) ? a->stmt->operand : "";
+}
+
+/* Drops a trailing ,X, ,Y, or ,S. */
+static void strip_index(char *s)
+{
+    size_t n = strlen(s);
+
+    if (n >= 2 && s[n - 2] == ',' && strchr("XYS", toupper((unsigned char)s[n - 1])) != NULL) {
+        s[n - 2] = '\0';
+    }
+}
+
+/* The operand as merlin32 shows it in an address-mode message. */
+static void merlin_shown(const char *operand, char *out, size_t cap)
+{
+    char buf[ASM_LINE_MAX];
+    size_t n;
+
+    snprintf(buf, sizeof buf, "%s", operand);
+    if (buf[0] == '#') {
+        const char *comma = strchr(buf, ',');
+
+        snprintf(out, cap, "%s", comma != NULL ? comma + 1 : buf);
+        return;
+    }
+    strip_index(buf);
+    n = strlen(buf);
+    if (n >= 2 && ((buf[0] == '(' && buf[n - 1] == ')') || (buf[0] == '[' && buf[n - 1] == ']'))) {
+        buf[n - 1] = '\0';
+        snprintf(out, cap, "%s", buf + 1);
+        strip_index(out);
+        return;
+    }
+    snprintf(out, cap, "%s", buf);
+}
+
+/* The name merlin32 reports as the element that could not be placed. */
+static void merlin_element(const char *shown, char *out, size_t cap)
+{
+    const char *p = shown;
+    size_t n;
+
+    if (*p == '#' || *p == '<' || *p == '>' || *p == '^') {
+        p++;
+    }
+    n = strcspn(p, "+-*/& ");
+    snprintf(out, cap, "%.*s", (int)n, p);
+}
+
+static void mode_error(Asm *a)
+{
+    report(a, RANK_MODE,
+        "Impossible to decode address mode for instruction '%s  %s' (line %d, file '%s').",
+        stmt_opcode(a), stmt_operand(a), a->line_no, a->path);
+}
+
+static void element_error(Asm *a)
+{
+    char shown[ASM_LINE_MAX];
+    char elem[ASM_LINE_MAX];
+    const char *opr = stmt_operand(a);
+
+    merlin_shown(opr, shown, sizeof shown);
+    merlin_element(shown, elem, sizeof elem);
+    report(a, RANK_MODE,
+        "Impossible to decode address mode for instruction '%s  %s' (line %d, file '%s') : Can't find format for element '%s' in Operand '%s'.",
+        stmt_opcode(a), opr, a->line_no, a->path, elem, shown);
+}
+
+static void jump_error(Asm *a)
+{
+    report(a, RANK_JUMP,
+        "Bad Jump for instruction '%s  %s' (line %d, file '%s') : Too long.",
+        stmt_opcode(a), stmt_operand(a), a->line_no, a->path);
+}
+
+static void unknown_line(Asm *a)
+{
+    report(a, RANK_UNKNOWN, "Unknown line '%s' in source file '%s' (line %d).",
+        a->stmt_text != NULL ? a->stmt_text : "", a->path, a->line_no);
+}
+
+static void hex_error(Asm *a)
+{
+    report(a, RANK_DATA_FORMAT,
+        "Impossible to decode Data format for instruction '%s  %s' (line %d, file '%s') : Wrong Hex Format Data in Operand '%s'.",
+        stmt_opcode(a), stmt_operand(a), a->line_no, a->path, stmt_operand(a));
+}
+
+/* Reports an undefined symbol in the form merlin32 uses for the statement's
+ * directive or instruction. text is the expression that failed. */
+static void undefined_error(Asm *a, const char *text)
+{
+    const char *opr = stmt_operand(a);
+    size_t n = strlen(opr);
+
+    switch (a->ctx) {
+    case CTX_ORG:
+        report(a, RANK_EVAL,
+            "Error : Impossible to evaluate ORG Address : '%s' (line %d, file '%s') : '%s' can't be translated as a numeric expression.",
+            text, a->line_no, a->path, text);
+        break;
+    case CTX_DS:
+        report(a, RANK_DATA_FORMAT,
+            "Impossible to decode Data format for instruction '%s  %s' (line %d, file '%s') : Wrong DS Format Data in Operand '%s' ('%s' can't be translated as a numeric expression).",
+            stmt_opcode(a), opr, a->line_no, a->path, text, text);
+        break;
+    case CTX_DATA:
+        report(a, RANK_DATA_BUILD,
+            "Impossible to build Data line '%s  %s' (line %d, file '%s') : Impossible to evaluate DB Data '%s' ('%s' can't be translated as a %s expression).",
+            stmt_opcode(a), opr, a->line_no, a->path, text, text, text[0] == '$' ? "hexadecimal" : "numeric");
+        break;
+    case CTX_ERR:
+        report(a, RANK_ERR,
+            "Impossible to evaluate ERR expression '%s' (line %d, file '%s') : '%s' can't be translated as a numeric expression",
+            text, a->line_no, a->path, text);
+        break;
+    case CTX_INSTR:
+        if (n >= 2 && !strchr(opr, ',') && ((opr[0] == '(' && opr[n - 1] == ')') || (opr[0] == '[' && opr[n - 1] == ']'))) {
+            char inner[ASM_LINE_MAX];
+
+            snprintf(inner, sizeof inner, "%.*s", (int)(n - 2), opr + 1);
+            report(a, RANK_EVAL,
+                "Impossible to evaluate Operand '%s' for instruction '%s  %s' (line %d, file '%s') : '%s' can't be translated as a numeric expression.",
+                inner, stmt_opcode(a), opr, a->line_no, a->path, inner);
+        } else {
+            element_error(a);
+        }
+        break;
+    default:
+        diag(a, "undefined symbol in '%s'", text);
+        break;
+    }
+}
+
 
 /* Local labels (leading ':') are qualified by the last global label. */
 static bool make_key(const Asm *a, const char *name, char *key, size_t cap)
@@ -279,7 +486,8 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
             snprintf(s->shown, sizeof s->shown, "%s", name);
         }
     } else if (s->def_line != a->line_no) {
-        diag(a, "duplicate label: %s", name);
+        report(a, RANK_DUP_LABEL, "Found label name '%s' in both source files '%s' (line %d) and '%s' (line %d).",
+            name, a->path, s->def_line, a->path, a->line_no);
         return;
     }
     if (a->pass == 2 && a->errors == 0 && s->defined && (!defined || s->value != value)) {
@@ -375,7 +583,7 @@ static bool eval_operand(Asm *a, const char *text, int32_t *value, bool *defined
     if (!*defined) {
         *value = 0;
         if (a->pass == 2) {
-            diag(a, "undefined symbol in '%s'", text);
+            undefined_error(a, text);
             return false;
         }
     }
@@ -440,13 +648,13 @@ static bool hex_decode(Asm *a, const char *s, uint8_t *buf, size_t *n)
         if (i > 0 && s[i] == ',') {
             i++;
             if (i >= len || s[i] == ',') {
-                diag(a, "bad comma in hex data");
+                hex_error(a);
                 return false;
             }
             continue;
         }
         if (i + 1 >= len || !isxdigit((unsigned char)s[i]) || !isxdigit((unsigned char)s[i + 1])) {
-            diag(a, "hex data needs digit pairs");
+            hex_error(a);
             return false;
         }
         buf[(*n)++] = (uint8_t)(hex_value((unsigned char)s[i]) * 16 + hex_value((unsigned char)s[i + 1]));
@@ -541,8 +749,14 @@ static void ds_directive(Asm *a, const SrcLine *ln)
     if (!eval_operand(a, item, &count, &defined)) {
         return;
     }
-    if (count < 0 || count > 0xFFFF) {
-        diag(a, "DS size out of range");
+    if (count < 0) {
+        report(a, RANK_DATA_FORMAT,
+            "Impossible to decode Data format for instruction '%s  %s' (line %d, file '%s') : Wrong DS Value in Operand '%s' : Negative value (%ld).",
+            stmt_opcode(a), stmt_operand(a), a->line_no, a->path, item, (long)count);
+        return;
+    }
+    if (count > 0xFFFF) {
+        report(a, RANK_SIZE, "Error : Object code size > 64 KB (line %d, file '%s').", a->line_no, a->path);
         return;
     }
     if (next_item(&p, item, sizeof item)) {
@@ -829,7 +1043,7 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
             o->form = F_IDL;
             return set_expr(a, o, s + 1, n - 2);
         }
-        diag(a, "bad bracket operand");
+        element_error(a);
         return false;
     }
     if (s[0] == '(') {
@@ -853,7 +1067,7 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
             o->form = F_IND;
             return set_expr(a, o, s + 1, n - 2);
         }
-        diag(a, "bad indirect operand");
+        element_error(a);
         return false;
     }
     o->form = F_DIR;
@@ -874,14 +1088,14 @@ static bool lookup_mode(Asm *a, const char *mnem, AddrMode mode, uint8_t *op)
     if (opcode_lookup(mnem, mode, op)) {
         return true;
     }
-    diag(a, "%s does not support this addressing mode", mnem);
+    mode_error(a);
     return false;
 }
 
 static bool put_word(Asm *a, int32_t v, uint8_t *out)
 {
     if (v < 0 || v > 0xFFFF) {
-        diag(a, "address out of range");
+        mode_error(a);
         return false;
     }
     out[0] = (uint8_t)(v & 0xFF);
@@ -892,7 +1106,7 @@ static bool put_word(Asm *a, int32_t v, uint8_t *out)
 static bool put_long(Asm *a, int32_t v, uint8_t *out)
 {
     if (v < 0 || v > 0xFFFFFF) {
-        diag(a, "address out of range");
+        mode_error(a);
         return false;
     }
     out[0] = (uint8_t)(v & 0xFF);
@@ -928,7 +1142,7 @@ static bool encode_bracket(Asm *a, const char *mnem, const Operand *o, uint8_t *
     }
     if (o->form == F_IDL && !opcode_lookup(mnem, AM_IDL, &out[0])) {
         if (!opcode_lookup(mnem, AM_IAL, &out[0])) {
-            diag(a, "%s does not support this addressing mode", mnem);
+            mode_error(a);
             return false;
         }
         if (!put_word(a, v, out + 1)) {
@@ -1099,7 +1313,7 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
             *size = 2;
             return true;
         }
-        diag(a, "%s does not support this addressing mode", mnem);
+        mode_error(a);
         return false;
     case F_IDL:
     case F_IDY:
@@ -1121,7 +1335,7 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
             int32_t off = v - (a->pc + 2);
 
             if (off < -128 || off > 127) {
-                diag(a, "branch target out of range");
+                jump_error(a);
                 return false;
             }
             out[1] = (uint8_t)(off & 0xFF);
@@ -1144,7 +1358,7 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
             int32_t off = v - (a->pc + 3);
 
             if (off < -32768 || off > 32767) {
-                diag(a, "branch target out of range");
+                jump_error(a);
                 return false;
             }
             out[1] = (uint8_t)(off & 0xFF);
@@ -1209,7 +1423,7 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
             *size = 3;
             return true;
         }
-        diag(a, "%s does not support this addressing mode", mnem);
+        mode_error(a);
         return false;
     }
     if (a->pass == 1) {
@@ -1248,7 +1462,7 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         *size = 4;
         return true;
     }
-    diag(a, "%s does not support this addressing mode", mnem);
+    mode_error(a);
     return false;
 }
 
@@ -1258,6 +1472,7 @@ static void instruction(Asm *a, const char *mnem, bool forced, const SrcLine *ln
     uint8_t bytes[4] = { 0, 0, 0, 0 };
     int size = 0;
 
+    a->ctx = CTX_INSTR;
     if (opcode_lookup(mnem, AM_BLK, &bytes[0])) {
         if (block_move(a, mnem, ln, bytes, &size)) {
             emit(a, bytes, size);
@@ -1286,7 +1501,8 @@ static void mx_directive(Asm *a, const SrcLine *ln)
         return;
     }
     if (v < 0 || v > 3) {
-        diag(a, "MX value out of range");
+        report(a, RANK_MX, "Bad value '%s' for MX directive '%s' (line %d from file '%s') : .",
+            ln->operand, ln->operand, a->line_no, a->path);
         return;
     }
     a->acc16 = !(v & 2);
@@ -1305,9 +1521,10 @@ static void err_directive(Asm *a, const SrcLine *ln)
         diag(a, "ERR needs an expression");
     } else if (eval_operand(a, ln->operand, &v, &defined)) {
         if (!defined) {
-            diag(a, "ERR expression is undefined");
+            undefined_error(a, ln->operand);
         } else if (v != 0) {
-            diag(a, "ERR expression is nonzero");
+            report(a, RANK_ERR, "The evaluation of ERR expression '%s' is '0x%X' (line %d, file '%s')",
+                ln->operand, (unsigned)v, a->line_no, a->path);
         }
     }
 }
@@ -1354,8 +1571,27 @@ static void typ_directive(Asm *a, const SrcLine *ln)
     }
 }
 
+static enum err_ctx directive_ctx(const char *name)
+{
+    if (strcmp(name, "ORG") == 0) {
+        return CTX_ORG;
+    }
+    if (strcmp(name, "DS") == 0) {
+        return CTX_DS;
+    }
+    if (strcmp(name, "DFB") == 0 || strcmp(name, "DB") == 0 ||
+        strcmp(name, "DW") == 0 || strcmp(name, "DA") == 0) {
+        return CTX_DATA;
+    }
+    if (strcmp(name, "ERR") == 0) {
+        return CTX_ERR;
+    }
+    return CTX_NONE;
+}
+
 static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
 {
+    a->ctx = directive_ctx(name);
     if (strcmp(name, "ORG") == 0) {
         org_directive(a, ln);
     } else if (strcmp(name, "DS") == 0) {
@@ -1404,7 +1640,7 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
     } else if (strcmp(name, "TYP") == 0) {
         typ_directive(a, ln);
     } else {
-        diag(a, "unknown opcode or directive: %s", name);
+        unknown_line(a);
     }
 }
 
@@ -1471,7 +1707,7 @@ static void skipped_op(Asm *a, const char *name)
     if (strlen(name) == 4 && name[3] != 'D' && opcode_known(base)) {
         return;
     }
-    diag(a, "unknown opcode or directive: %s", name);
+    unknown_line(a);
 }
 
 static bool eval_cond_expr(Asm *a, const char *text, int32_t *value)
@@ -1520,7 +1756,8 @@ static void conditional_op(Asm *a, const char *name, const SrcLine *ln)
 
     if (strcmp(name, "FIN") == 0) {
         if (a->ncond == 0) {
-            diag(a, "FIN without DO or IF");
+            report(a, RANK_FIN, "FIN directive found in source file '%s' at line %d doesn't match with a previous (missing) DO or IF.",
+                a->path, a->line_no);
         } else {
             a->cond_on = a->conds[--a->ncond];
         }
@@ -1684,7 +1921,7 @@ static bool load_source(Asm *a, char ***lines, size_t *nlines)
     FILE *f = fopen(a->path, "r");
 
     if (f == NULL) {
-        fprintf(stderr, "%s: cannot open: %s\n", a->path, strerror(errno));
+        record(a, RANK_OPEN, "Impossible to open Source file '%s'.", a->path);
         return false;
     }
     return read_lines(a, f, lines, nlines);
@@ -1761,7 +1998,7 @@ static bool include_file(Asm *a, const char *operand, bool use, char ***out, siz
         }
     }
     if (f == NULL) {
-        diag(a, "Impossible to open Source file '%s'.", name);
+        record(a, RANK_OPEN, "Impossible to open Source file '%s'.", name);
         return true;
     }
     if (!read_lines(a, f, &lines, &nlines)) {
@@ -2314,6 +2551,9 @@ static void assemble_statement(Asm *a, const char *text)
         diag(a, "%s", err);
         return;
     }
+    a->stmt = &ln;
+    a->stmt_text = text;
+    a->ctx = CTX_NONE;
     if (ln.has_label && cond_active(a)) {
         lup_label(a, &ln);
     }
@@ -2387,6 +2627,7 @@ static void assemble_statement(Asm *a, const char *text)
             }
         }
     }
+    a->stmt = NULL;
 }
 
 static bool run_pass(Asm *a, int pass)
@@ -2446,7 +2687,7 @@ static bool run_pass(Asm *a, int pass)
         pop_frame(a);
     }
     if (pass == 2 && a->ncond > 0) {
-        diag(a, "missing FIN for DO or IF");
+        report(a, RANK_FIN, "Missing FIN directive in source file '%s' (due to previous usage of a DO or IF directive).", a->path);
     }
     if (pass == 2 && a->lup_open) {
         diag(a, "Impossible to locate end of Lup");
@@ -2595,6 +2836,9 @@ bool assemble_source(const char *path, const char *macro_dir, FILE *listing, int
         }
     }
     ok = ok && run_pass(&a, 2) && a.errors == 0;
+    if (a.err_has) {
+        fprintf(stderr, "      => [Error] %s\n", a.err_msg);
+    }
     if (ok && table_cols >= 0 && listing != NULL && !write_symbol_table(listing, &a, (size_t)table_cols)) {
         fprintf(stderr, "%s: cannot write symbol table\n", path);
         ok = false;
