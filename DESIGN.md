@@ -30,6 +30,7 @@ Deferred (later phases):
 Not in scope:
 
 - Editor, Sourceror, or any interactive Merlin UI.
+- Sweet 16 pseudo-code mode.
 - Windows and macOS code paths.
 
 ## Architecture
@@ -51,9 +52,9 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 ### Phase 0: Foundations
 
 - [x] CMake project skeleton, GCC warnings enabled, CTest wired up
-- [~] Test harness (CTest smoke test added; oracle-comparison script not yet)
+- [x] Test harness: CTest smoke test, plus oracle comparison in `tests/oracle/` (enabled with `-DMERLIN32_BIN`)
 - [x] Language: C11 (decided by user)
-- [ ] Collect reference excerpts: Merlin 16+ assembler chapter, 65C02/65C816 opcode tables
+- [x] Collect reference locations (see References)
 
 ### Phase 1: Core 6502 assembler
 
@@ -76,17 +77,17 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ### Phase 3: Control flow and text
 
-- [ ] Conditionals: `DO`, `ELSE`, `FIN`, nested
+- [ ] Conditionals: `IF`, `DO`, `ELSE`, `FIN`, nested
 - [ ] Loops: `LUP`, `--^`
 - [ ] Variables: `]name` assembler variables
 - [ ] Macros: `MAC`, `EOM`, positional `]1`..`]9` arguments
 - [ ] `PUT` / `USE` includes with search paths
-- [ ] Text directives: `STR`, `FLS`, `REV`, `INV`, `KEY`
+- [ ] Text directives: `STR`, `FLS`, `REV`, `INV`, `KBD`
 - [ ] Listing controls: `LST`, `PAG`, `TR`, `EXP`, `ERR`
 
 ### Phase 4: Output and completeness
 
-- [ ] `SAV`, `DSK`, `TYP`, `AUX` output hints
+- [ ] `SAV`, `DSK`, `TYP` output hints
 - [ ] Symbol table output
 - [ ] Full listing parity for the oracle test suite
 - [ ] Error-message parity for common mistakes
@@ -96,6 +97,18 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 - [ ] OMF v2.1 object output
 - [ ] Linker and link scripts
+
+## References
+
+All paths are relative to the reference library at `/root/iigs-refs/`.
+
+- Merlin 16+ manual: `Reference Docs - Software/Merlin_816_Macro_Assembler_Manual_text.txt`
+  - Addressing modes: p.83
+  - Forced non-zero-page and 65C02/65816 opcodes: p.85-86
+  - Pseudo-ops: p.87. Formatting: p.103. Strings: p.107. Data and storage: p.110
+  - Conditionals: p.114-116. Miscellaneous: p.119. Macros: p.127. Linker: p.137-155
+- 65C02 and 65C816 opcode reference: WDC datasheets in `Reference Docs - Hardware/`
+- Oracle binary: merlin32 v1.1.10, used as a black box only
 
 ## Open questions
 
