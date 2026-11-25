@@ -28,6 +28,8 @@ typedef struct {
     char *text;
     /* A ] code label, listed as ozunid_N for the pass-2 generation oz_gen. */
     bool oz_label;
+    /* run_pass generation in which a ] label was last defined. */
+    int oz_def_gen;
     int oz_gen;
     char oz_name[24];
 } Symbol;
@@ -501,6 +503,10 @@ static bool lookup_sym(void *ctx, const char *name, int32_t *value)
     if (s == NULL || !s->defined) {
         return false;
     }
+    /* merlin32 rejects a forward reference to a label-style variable. */
+    if (s->oz_label && s->oz_def_gen != a->ozgen) {
+        return false;
+    }
     /* While sizing, a code label is visible only once defined in this pass,
      * so forward references get the 3-byte form. EQU values carry over from
      * earlier passes, which matches merlin32's zero-page choice for them. */
@@ -542,6 +548,7 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
         s->is_equ = true;
         if (!equ) {
             s->oz_label = true;
+            s->oz_def_gen = a->ozgen;
         }
         return;
     }
@@ -3154,7 +3161,7 @@ static void assemble_statement(Asm *a, const char *text)
             a->lst_type = LST_DIRECTIVE;
             a->lst_vis = LV_SHOW;
             if (!ln.has_label) {
-                diag(a, "KBD needs a label");
+                warn(a, "KBD without a label emits no bytes");
             } else {
                 define_label(a, ln.label, a->pc, true, false);
             }

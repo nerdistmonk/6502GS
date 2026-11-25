@@ -91,7 +91,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Known merlin bug, not matched: after `DO 0` / `DO 0` / `ELSE`, merlin sizes the next immediate operand as 8-bit even under `MX %00`. Our output is correct. The oracle case avoids immediates there.
 - [x] Loops: `LUP`, `--^` (nested LUP is an error; `@` labels become `ozunid_N` as merlin32 does, not the manual's A/B/C countdown; `@` in a LUP over 26 iterations is an error)
 - [x] Variables: `]name` assembler variables (`=`, `EQU`, or label on a line; redefinable; persist across passes)
-  - Merlin's forward reference to a variable uses its value from the previous pass. A forward reference to a label-style variable is an error in merlin; we accept it (not yet matched).
+  - Merlin's forward reference to a variable uses its value from the previous pass. A forward reference to a label-style variable is an error in merlin and in asm816 (`LDA #]L`, `JMP ]L`, and `DFB ]L` before the `]L` line). The `LDA`/`JMP` messages match merlin; the `DFB` message differs.
 - [x] Macros: `MAC`, `EOM`, `]0` (argument count) and positional `]1`..`]8` arguments; `NAME args` and `PMC NAME`; body labels become `ozunid_N` per expansion, as merlin32 does; `:` local names in a macro expansion's operand are an error, as in merlin32
 - [x] `PUT` / `USE` includes (expanded at load time, before macros, LUP, and conditionals)
   - `PUT` resolves relative to the source file's directory. `USE` also falls back to the macro library (`asm816 -m <dir>`). Merlin's default library path is not used.
@@ -106,7 +106,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Merlin differs from the manual, and merlin wins: `DCI` inverts the high bit of the last byte even when a hex suffix follows; `STR`'s length byte counts the hex suffix; `INV` and `FLS` mask the hex suffix too; `FLS` accepts only `$20`-`$5F` string characters; `REV` rejects a hex suffix.
   - `KBD` sets its label to the current PC when no key is read (merlin's behavior with no input). The prompt operand is ignored.
   - `STR` over 255 bytes is diagnosed in both tools, with different wording. The object bytes for 255 bytes match merlin32.
-  - Not yet probed: whether `KBD` with a label-less line errors in merlin (we diagnose it).
+  - A label-less `KBD` emits no bytes and is silent in merlin32. We emit the same bytes and listing, with a stderr warning.
 - [x] Listing controls: `LST`, `PAG`, `TR`, `EXP` accepted; `ERR expr` fails the build when the value is nonzero or undefined, checked after both passes as merlin32 does
   - Listing format (`-v`) is matched in Phase 4, including control-row hiding inside expansions.
 

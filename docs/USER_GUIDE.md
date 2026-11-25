@@ -187,7 +187,8 @@ asm816 matches merlin32 for the behaviors above. Known differences:
 - **Variables and symbols.** Variables (`]x`) are left out of the symbol
   table. Local labels print with a leading `_`.
 - **Forward variable references.** A forward reference to a label-style
-  variable is an error in merlin32 and is accepted here.
+  variable is an error in both tools. The `LDA #]L` and `JMP ]L` messages
+  match merlin32. The `DFB ]L` message is worded differently.
 - **`ORG` inside `DUM`.** The listing shows `$FFFF` for the address, as
   merlin32 does. The assembled PC is unchanged.
 - **Known merlin32 bug, not reproduced.** After `DO 0` / `DO 0` / `ELSE`,
@@ -197,8 +198,9 @@ asm816 matches merlin32 for the behaviors above. Known differences:
   inside a macro expansion or a `LUP` body are hidden, as in merlin32. Their
   line numbers are still consumed. Outside expansions these rows are shown.
   `PAG` writes no form feeds in either tool.
-- **Not yet probed.** Whether `KBD` with a label-less line errors in
-  merlin32 (we diagnose it). Absolute `PUT`/`USE` paths now match merlin32.
+- **`KBD` without a label.** merlin32 accepts the line silently and emits no
+  bytes. asm816 does the same and prints a warning on stderr. Absolute
+  `PUT`/`USE` paths now match merlin32.
 
 ## Testing
 

@@ -1,0 +1,4 @@
+ ORG $2000
+ LDA #]L
+]L NOP
+ RTS

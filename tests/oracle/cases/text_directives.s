@@ -20,3 +20,4 @@
          REV 'Insert'
 KEY      KBD
          DFB KEY
+         KBD
