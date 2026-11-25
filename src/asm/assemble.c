@@ -620,6 +620,17 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         return true;
     case F_IZX:
     case F_IZY:
+        if (o->form == F_IZX && opcode_lookup(mnem, AM_IAX, &out[0])) {
+            if (!eval_operand(a, o->expr, &v, &defined) || !put_word(a, v, out + 1)) {
+                return false;
+            }
+            if (defined && v >= 0 && v <= 0xFF) {
+                diag(a, "%s (addr,X) operand must be 16-bit", mnem);
+                return false;
+            }
+            *size = 3;
+            return true;
+        }
         if (!lookup_mode(a, mnem, o->form == F_IZX ? AM_IZX : AM_IZY, &out[0]) ||
             !eval_operand(a, o->expr, &v, &defined)) {
             return false;
@@ -632,12 +643,27 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         *size = 2;
         return true;
     case F_IND:
-        if (!lookup_mode(a, mnem, AM_IND, &out[0]) || !eval_operand(a, o->expr, &v, &defined) ||
-            !put_word(a, v, out + 1)) {
+        if (!eval_operand(a, o->expr, &v, &defined)) {
             return false;
         }
-        *size = 3;
-        return true;
+        if (opcode_lookup(mnem, AM_IND, &out[0])) {
+            if (!put_word(a, v, out + 1)) {
+                return false;
+            }
+            *size = 3;
+            return true;
+        }
+        if (opcode_lookup(mnem, AM_IZP, &out[0])) {
+            if (v < 0 || v > 0xFF) {
+                diag(a, "indirect operand must be zero page");
+                return false;
+            }
+            out[1] = (uint8_t)v;
+            *size = 2;
+            return true;
+        }
+        diag(a, "%s does not support this addressing mode", mnem);
+        return false;
     case F_DIR:
         break;
     }

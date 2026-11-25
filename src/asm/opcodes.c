@@ -91,12 +91,46 @@ static const OpEntry TABLE[] = {
     { "TYA", AM_IMP, 0x98 },
 };
 
+/* 65C02 additions. merlin32 accepts these without an XC directive. */
+static const OpEntry TABLE_65C02[] = {
+    { "ADC", AM_IZP, 0x72 },
+    { "AND", AM_IZP, 0x32 },
+    { "BIT", AM_IMM, 0x89 }, { "BIT", AM_ZPX, 0x34 }, { "BIT", AM_ABX, 0x3C },
+    { "BRA", AM_REL, 0x80 },
+    { "CMP", AM_IZP, 0xD2 },
+    { "DEC", AM_ACC, 0x3A },
+    { "EOR", AM_IZP, 0x52 },
+    { "INC", AM_ACC, 0x1A },
+    { "JMP", AM_IAX, 0x7C },
+    { "LDA", AM_IZP, 0xB2 },
+    { "ORA", AM_IZP, 0x12 },
+    { "PHX", AM_IMP, 0xDA },
+    { "PHY", AM_IMP, 0x5A },
+    { "PLX", AM_IMP, 0xFA },
+    { "PLY", AM_IMP, 0x7A },
+    { "SBC", AM_IZP, 0xF2 },
+    { "STA", AM_IZP, 0x92 },
+    { "STP", AM_IMP, 0xDB },
+    { "STZ", AM_ZP, 0x64 }, { "STZ", AM_ZPX, 0x74 }, { "STZ", AM_ABS, 0x9C },
+    { "STZ", AM_ABX, 0x9E },
+    { "TRB", AM_ZP, 0x14 }, { "TRB", AM_ABS, 0x1C },
+    { "TSB", AM_ZP, 0x04 }, { "TSB", AM_ABS, 0x0C },
+    { "WAI", AM_IMP, 0xCB },
+};
+
+#define TABLE_COUNT(t) (sizeof(t) / sizeof((t)[0]))
+
 bool opcode_known(const char *mnem)
 {
     size_t i;
 
-    for (i = 0; i < sizeof TABLE / sizeof TABLE[0]; i++) {
+    for (i = 0; i < TABLE_COUNT(TABLE); i++) {
         if (strcmp(TABLE[i].name, mnem) == 0) {
+            return true;
+        }
+    }
+    for (i = 0; i < TABLE_COUNT(TABLE_65C02); i++) {
+        if (strcmp(TABLE_65C02[i].name, mnem) == 0) {
             return true;
         }
     }
@@ -107,9 +141,15 @@ bool opcode_lookup(const char *mnem, AddrMode mode, uint8_t *opcode)
 {
     size_t i;
 
-    for (i = 0; i < sizeof TABLE / sizeof TABLE[0]; i++) {
+    for (i = 0; i < TABLE_COUNT(TABLE); i++) {
         if (TABLE[i].mode == mode && strcmp(TABLE[i].name, mnem) == 0) {
             *opcode = TABLE[i].opcode;
+            return true;
+        }
+    }
+    for (i = 0; i < TABLE_COUNT(TABLE_65C02); i++) {
+        if (TABLE_65C02[i].mode == mode && strcmp(TABLE_65C02[i].name, mnem) == 0) {
+            *opcode = TABLE_65C02[i].opcode;
             return true;
         }
     }

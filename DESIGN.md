@@ -69,7 +69,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ### Phase 2: 65C02 and 65C816
 
-- [ ] 65C02 opcodes and addressing modes
+- [x] 65C02 opcodes and addressing modes (zero-page indirect, `(abs,X)` JMP, `BRA`, `STZ`, `TSB`/`TRB`, `INC A`/`DEC A`, `PHX`/`PHY`/`PLX`/`PLY`, `WAI`/`STP`)
 - [ ] 65C816 opcodes, long addressing, stack-relative modes
 - [ ] `XC`, `MX`, and width tracking across branches
 - [ ] Directives: `ADR`, `ADRL`, `REL`, `DUM`/`DEND`

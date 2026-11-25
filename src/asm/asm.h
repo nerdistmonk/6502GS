@@ -36,6 +36,8 @@ typedef enum {
     AM_IND,
     AM_IZX,
     AM_IZY,
+    AM_IZP,
+    AM_IAX,
     AM_REL
 } AddrMode;
 
