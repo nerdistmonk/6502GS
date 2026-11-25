@@ -162,7 +162,8 @@ asm816 matches merlin32 for the behaviors above. Known differences:
 - **Wide operands.** An address too wide for its 16-bit form (`STA $E10000`)
   is truncated to its low 16 bits (`8D 00 00`), as merlin32 does. asm816 also
   prints a warning to stderr, which merlin32 does not. Use `STA >$E10000` for
-  the 24-bit form. Values above `$FFFFFF` are errors.
+  the 24-bit form. Values above `$FFFFFF` are errors, except in the `JML [abs]`,
+  `JMP [abs]`, and `JMP (abs)` forms, which truncate like the other 16-bit forms.
 - **Accept/reject.** Some inputs merlin32 accepts are rejected here, including
   bare `DB` and long labels.
 - **Multiple errors.** merlin32 can print several errors in one run. asm816

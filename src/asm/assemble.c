@@ -1082,6 +1082,18 @@ static bool set_expr(Asm *a, Operand *o, const char *src, size_t n)
     return true;
 }
 
+/* Indirect operands may start with '<' or '>'. merlin32 ignores the prefix
+ * for the value, but rejects some prefixed forms; encode_* decides. */
+static bool set_indirect_expr(Asm *a, Operand *o, const char *src, size_t n)
+{
+    if (n > 0 && (src[0] == '<' || src[0] == '>')) {
+        o->mod = src[0];
+        src++;
+        n--;
+    }
+    return set_expr(a, o, src, n);
+}
+
 /* Classifies the operand text into a form, index register, and expression. */
 static bool parse_operand(Asm *a, const char *s, Operand *o)
 {
@@ -1109,11 +1121,11 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
     if (s[0] == '[') {
         if (n >= 5 && strcmp(s + n - 3, "],Y") == 0) {
             o->form = F_IDY;
-            return set_expr(a, o, s + 1, n - 4);
+            return set_indirect_expr(a, o, s + 1, n - 4);
         }
         if (s[n - 1] == ']') {
             o->form = F_IDL;
-            return set_expr(a, o, s + 1, n - 2);
+            return set_indirect_expr(a, o, s + 1, n - 2);
         }
         element_error(a);
         return false;
@@ -1121,7 +1133,7 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
     if (s[0] == '(') {
         if (n >= 5 && strcmp(s + n - 5, ",S),Y") == 0) {
             o->form = F_SRY;
-            return set_expr(a, o, s + 1, n - 6);
+            return set_indirect_expr(a, o, s + 1, n - 6);
         }
         if (n >= 4 && strcmp(s + n - 3, ",S)") == 0) {
             diag(a, "(sr,S) needs ,Y");
@@ -1129,15 +1141,15 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
         }
         if (n >= 4 && strcmp(s + n - 3, ",X)") == 0) {
             o->form = F_IZX;
-            return set_expr(a, o, s + 1, n - 4);
+            return set_indirect_expr(a, o, s + 1, n - 4);
         }
         if (n >= 4 && strcmp(s + n - 3, "),Y") == 0) {
             o->form = F_IZY;
-            return set_expr(a, o, s + 1, n - 4);
+            return set_indirect_expr(a, o, s + 1, n - 4);
         }
         if (n >= 2 && s[n - 1] == ')') {
             o->form = F_IND;
-            return set_expr(a, o, s + 1, n - 2);
+            return set_indirect_expr(a, o, s + 1, n - 2);
         }
         element_error(a);
         return false;
@@ -1165,9 +1177,9 @@ static bool lookup_mode(Asm *a, const char *mnem, AddrMode mode, uint8_t *op)
 }
 
 /* Operands wider than their slot keep the low bits, as merlin32 does. */
-static bool put_word(Asm *a, int32_t v, uint8_t *out)
+static bool put_word_trunc(Asm *a, int32_t v, uint8_t *out)
 {
-    if (v < 0 || v > 0xFFFFFF) {
+    if (v < 0) {
         mode_error(a);
         return false;
     }
@@ -1178,6 +1190,16 @@ static bool put_word(Asm *a, int32_t v, uint8_t *out)
     out[0] = (uint8_t)(v & 0xFF);
     out[1] = (uint8_t)((v >> 8) & 0xFF);
     return true;
+}
+
+/* Absolute operands above $FFFFFF are errors. */
+static bool put_word(Asm *a, int32_t v, uint8_t *out)
+{
+    if (v > 0xFFFFFF) {
+        mode_error(a);
+        return false;
+    }
+    return put_word_trunc(a, v, out);
 }
 
 static bool put_long(Asm *a, int32_t v, uint8_t *out)
@@ -1218,15 +1240,19 @@ static bool encode_bracket(Asm *a, const char *mnem, const Operand *o, uint8_t *
     bool defined = false;
     AddrMode mode = (o->form == F_IDL) ? AM_IDL : (o->form == F_IDY) ? AM_IDY : AM_SRY;
 
+    if (o->form == F_SRY && o->mod == '>') {
+        mode_error(a);
+        return false;
+    }
     if (!eval_operand(a, o->expr, &v, &defined)) {
         return false;
     }
     if (o->form == F_IDL && !opcode_lookup(mnem, AM_IDL, &out[0])) {
-        if (!opcode_lookup(mnem, AM_IAL, &out[0])) {
+        if (!opcode_lookup(mnem, AM_IAL, &out[0]) || o->mod == '<') {
             mode_error(a);
             return false;
         }
-        if (!put_word(a, v, out + 1)) {
+        if (!put_word_trunc(a, v, out + 1)) {
             return false;
         }
         *size = 3;
@@ -1353,6 +1379,10 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
     case F_IZX:
     case F_IZY:
         if (o->form == F_IZX && opcode_lookup(mnem, AM_IAX, &out[0])) {
+            if (o->mod != '\0') {
+                mode_error(a);
+                return false;
+            }
             if (!eval_operand(a, o->expr, &v, &defined) || !put_word(a, v, out + 1)) {
                 return false;
             }
@@ -1362,6 +1392,10 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
             }
             *size = 3;
             return true;
+        }
+        if (o->mod == '>') {
+            mode_error(a);
+            return false;
         }
         if (!lookup_mode(a, mnem, o->form == F_IZX ? AM_IZX : AM_IZY, &out[0]) ||
             !eval_operand(a, o->expr, &v, &defined)) {
@@ -1379,7 +1413,7 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
             return false;
         }
         if (opcode_lookup(mnem, AM_IND, &out[0])) {
-            if (!put_word(a, v, out + 1)) {
+            if (!put_word_trunc(a, v, out + 1)) {
                 return false;
             }
             *size = 3;
