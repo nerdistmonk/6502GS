@@ -128,8 +128,14 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Divergence: other errors keep our wording in merlin's line format (`<text> (line N, file 'F').`).
   - Divergence: merlin can print several errors in one run. We print one, so a pair such as an unknown line plus a missing FIN reports only the first.
   - Divergence: duplicate-label messages name the main source for both files, because includes are flattened before assembly.
-  - Accept/reject differences are not changed (for example bare `DB`, `DW $12345`, and long labels).
+  - Accept/reject differences are not changed (for example bare `DB` and long labels).
   - Covered by `tests/oracle/error_cases/` (`run_errors.sh`), one error per file.
+- [x] Wide operands and indirect prefixes, as merlin32 does
+  - Absolute, indexed, and `JMP (abs,X)` operands keep their low 16 bits, and `DA`/`DW` keep their low 16 bits. `>` long forms keep 24 bits. Values above `$FFFFFF` are an error in the absolute, indexed, and `JMP (abs,X)` forms.
+  - `JML [abs]`, `JMP [abs]`, and `JMP (abs)` truncate above `$FFFFFF` to 16 bits, with no error.
+  - Divergence: merlin32 truncates silently. We keep its bytes and print `[Warning] value ... truncated to 16 bits` to stderr.
+  - Prefixes inside `[ ]` and `( )` match merlin32's accept/reject set exactly. Accepted: `[>dp]`, `[<dp]`, `[dp],Y`, `(dp)`, `(<dp),Y`, `(<dp,X)`, `(<dp,S),Y`, `JMP (abs)`, `JML [>abs]`, and `JMP [>abs]`. Rejected: `(>dp),Y`, `(>dp,X)`, `(>dp,S),Y`, a prefix on `(abs,X)`, `JML [<abs]`, `JMP [<abs]`, and `[abs],Y`.
+  - Not matched: merlin32 ignores a `,X`, `,Y`, or `,S` suffix on `JML`/`JMP` bracket operands. `JML [$1234,X]` assembles as `DC 34 12`, like `JML [$1234]`. We reject these forms. A non-register suffix such as `,garbage` is an error in merlin32 too.
 - [x] Documentation: user guide (`docs/USER_GUIDE.md`) and dialect differences from merlin32
 
 ### Phase 5 (later): OMF and linking
@@ -151,11 +157,13 @@ All paths are relative to the reference library at `/root/iigs-refs/`.
 
 ## Open questions
 
-- Command-line interface: mirror merlin32 flags, or a new CLI?
+- Command-line interface: resolved. `asm816` mirrors merlin32's flags (`-m <dir>`, `-v<N>`) and adds `--version`.
+- Merlin's `,X`/`,Y`/`,S` suffix on `JML`/`JMP` bracket operands (see Phase 4): resolved, keep rejecting. Matching it would silently drop the index.
 
 ## Done criteria
 
-The skeleton binary is named `asm816` as a placeholder; rename it if you prefer.
+The binary is named `asm816`.
 
 Phases 1-4 are done when the oracle suite passes for 6502, 65C02, and
-65C816 sources, and all tests run under `ctest` on Linux with GCC.
+65C816 sources, and all tests run under `ctest` on Linux with GCC. Status:
+met (`ctest` 50/50, including the oracle suite).
