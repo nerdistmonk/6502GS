@@ -113,9 +113,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Labels print as `$` plus the low 16 bits at four digits. Names longer than 16 characters overflow their column, as merlin does.
   - Divergence: merlin orders label-based equates (`X1+k`) by an unexplained key. We sort all equates by value, with definition order on ties. Oracle cases use constant equates only.
   - Variables (`]x`) are left out. Local labels print as `_name`.
-- [~] Full listing parity for the oracle test suite (`-v` writes `<stem>_Output.txt`, named after the DSK/SAV target)
-  - 26 of 27 oracle listings match merlin32. Not matched: `macros`.
-  - Open: `macros` LUP `@` labels. merlin32 numbers them out of source order and the numbers depend on later expansions; the rule is not yet known.
+- [x] Full listing parity for the oracle test suite (`-v` writes `<stem>_Output.txt`, named after the DSK/SAV target)
+  - All 27 oracle listings match merlin32.
+  - Label numbering is two-phase, as merlin32 does. Phase A: each macro expansion, in source order, takes numbers for its MAC-body labels (nested expansions included). Phase B: after all phase A numbers, LUP `@` labels and macro labels inside LUP bodies are numbered per iteration in body order.
+  - The first layout run uses a high phase B base so its names cannot collide with later runs. Symbols persist across runs, so names must stay stable.
   - Divergence: an ORG inside a DUM block lists its address as `$FFFF`, as merlin32 does. The assembled PC is unchanged.
 - [x] Error-message parity for common mistakes
   - Errors print to stderr as `      => [Error] <text>`, the same form merlin32 uses on stdout. Assembly stops reporting after the first error, which is the lowest-ranked stage (merlin's ordering, approximated).

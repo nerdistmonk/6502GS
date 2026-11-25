@@ -9,6 +9,7 @@
 
 #define SYM_KEY_MAX (2 * ASM_NAME_MAX + 2)
 #define MAX_LAYOUT_PASSES 32
+#define OZ_FIRST_BASE 1000000
 
 typedef struct {
     char key[SYM_KEY_MAX];
@@ -171,7 +172,12 @@ typedef struct {
     size_t lup_next;
     int32_t lup_count;
     int32_t lup_left;
+    /* Phase A numbers follow source order. Phase B numbers (LUP @ labels and
+     * macro labels in LUP bodies) follow after all phase A numbers of the run,
+     * so ozbase holds the phase A total of the previous run. */
     int ozunid;
+    int ozbase;
+    int ozb;
     int ozgen;
     /* Macros persist across passes; run counts run_pass calls. */
     Macro *macros;
@@ -2509,6 +2515,8 @@ static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_ope
     LineOrigin *org;
     size_t nmap = 0;
     size_t i;
+    bool in_lup = a->lup_open && !a->lup_skip;
+    bool first_lup = in_lup && a->lup_left == a->lup_count;
 
     if (a->nframes > MACRO_DEPTH_MAX) {
         diag(a, "macro nesting too deep");
@@ -2528,8 +2536,16 @@ static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_ope
         if (body_label(m->lines[i], label, sizeof label) && name_start(label[0]) &&
             map_find(map, nmap, label, strlen(label)) == NULL) {
             snprintf(map[nmap].from, sizeof map[nmap].from, "%s", label);
-            a->ozunid++;
-            snprintf(map[nmap].to, sizeof map[nmap].to, "ozunid_%d", a->ozunid);
+            if (in_lup) {
+                a->ozb++;
+                snprintf(map[nmap].to, sizeof map[nmap].to, "ozunid_%d", a->ozbase + a->ozb);
+            } else {
+                a->ozunid++;
+                snprintf(map[nmap].to, sizeof map[nmap].to, "ozunid_%d", a->ozunid);
+            }
+            if (first_lup) {
+                a->ozunid++;
+            }
             nmap++;
         }
     }
@@ -2652,8 +2668,8 @@ static void lup_label(Asm *a, SrcLine *ln)
     if (!a->lup_open || a->lup_skip || strchr(ln->label, '@') == NULL) {
         return;
     }
-    a->ozunid++;
-    snprintf(ln->label, sizeof ln->label, "ozunid_%d", a->ozunid);
+    a->ozb++;
+    snprintf(ln->label, sizeof ln->label, "ozunid_%d", a->ozbase + a->ozb);
     if (a->lup_count > 26 && a->lup_left == a->lup_count) {
         diag(a, "Impossible to update Label '@' (more than 26 counts in Lup)");
     }
@@ -2874,7 +2890,7 @@ static void assemble_line(Asm *a, const char *text, LineOrigin org)
         assemble_statement(a, text);
     }
 
-    if (a->pass != 2 || !a->listing) {
+    if (!a->listing) {
         return;
     }
     if (org.silent) {
@@ -3119,7 +3135,11 @@ static bool run_pass(Asm *a, int pass)
     a->in_cond = false;
     a->lup_open = false;
     a->lup_skip = false;
+    /* The first run has no previous total, so its phase B names sit far above
+     * phase A names and cannot clash with them. Later runs reuse the same names. */
+    a->ozbase = a->run == 0 ? OZ_FIRST_BASE : a->ozunid;
     a->ozunid = 0;
+    a->ozb = 0;
     a->ozgen++;
     a->wide_seq = 0;
     a->run++;
