@@ -41,6 +41,39 @@ typedef struct {
     char expr[ASM_LINE_MAX];
 } Operand;
 
+#define MACRO_ARGS 8
+#define MACRO_DEPTH_MAX 15
+
+typedef struct {
+    char name[ASM_NAME_MAX + 1];
+    char **lines;
+    size_t nlines;
+    size_t caplines;
+    /* Run number of the most recent MAC line; a call is valid only after
+     * that MAC line in the same run. */
+    unsigned long def_run;
+} Macro;
+
+typedef struct {
+    char from[ASM_NAME_MAX + 1];
+    char to[ASM_NAME_MAX + 1];
+} LabelMap;
+
+/* Growable string used to build expanded macro lines. */
+typedef struct {
+    char *s;
+    size_t len;
+    size_t cap;
+    bool oom;
+} Buf;
+
+/* A frame is the source file (frames[0]) or one expanded macro body. */
+typedef struct {
+    char **lines;
+    size_t nlines;
+    size_t next;
+} Frame;
+
 typedef struct {
     const char *path;
     FILE *listing;
@@ -70,17 +103,29 @@ typedef struct {
     size_t ncond;
     size_t capcond;
     bool in_cond;
-    /* Open LUP: the loop body is replayed by seeking back to lup_off. */
+    /* Open LUP: the loop body is replayed by moving frame next back to lup_next.
+     * A LUP must end in the frame where it began (lup_frame). */
     bool lup_open;
     bool lup_skip;
-    bool lup_jump;
     size_t lup_depth;
-    int lup_line;
-    long lup_off;
-    long next_off;
+    size_t lup_frame;
+    size_t lup_next;
     int32_t lup_count;
     int32_t lup_left;
     int ozunid;
+    /* Macros persist across passes; run counts run_pass calls. */
+    Macro *macros;
+    size_t nmacros;
+    size_t capmacros;
+    unsigned long run;
+    /* While a MAC body is being recorded, def is its macro and lines go there until EOM. */
+    Macro *def;
+    bool in_def;
+    Frame *frames;
+    size_t nframes;
+    size_t capframes;
+    /* Per-pass instruction count; indexes wide[] so each instruction has its own slot. */
+    size_t wide_seq;
 } Asm;
 
 static void diag(Asm *a, const char *fmt, ...)
@@ -820,6 +865,29 @@ static bool block_move(Asm *a, const char *mnem, const SrcLine *ln, uint8_t *out
     return true;
 }
 
+static bool reserve_wide(Asm *a, size_t idx)
+{
+    size_t cap;
+    uint8_t *grown;
+
+    if (idx < a->capwide) {
+        return true;
+    }
+    cap = a->capwide ? a->capwide : 256;
+    while (cap <= idx) {
+        cap *= 2;
+    }
+    grown = realloc(a->wide, cap);
+    if (grown == NULL) {
+        fprintf(stderr, "out of memory\n");
+        return false;
+    }
+    memset(grown + a->capwide, 0, cap - a->capwide);
+    a->wide = grown;
+    a->capwide = cap;
+    return true;
+}
+
 /* Picks the opcode and operand bytes. Pass 1 records in wide[] whether the
  * operand needs the 3-byte form (undefined or not zero page); pass 2 uses
  * that record so instruction sizes match between passes. */
@@ -829,9 +897,12 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
     bool defined = false;
     AddrMode small;
     AddrMode wide;
-    size_t idx = (size_t)(a->line_no - 1);
+    size_t idx = a->wide_seq++;
 
     *size = 0;
+    if (!reserve_wide(a, idx)) {
+        return false;
+    }
     switch (o->form) {
     case F_NONE:
         if (opcode_lookup(mnem, AM_IMP, &out[0]) || opcode_lookup(mnem, AM_ACC, &out[0])) {
@@ -1256,6 +1327,480 @@ static void conditional_op(Asm *a, const char *name, const SrcLine *ln)
     }
 }
 
+static Frame *cur_frame(Asm *a)
+{
+    return &a->frames[a->nframes - 1];
+}
+
+static void free_lines(char **lines, size_t n)
+{
+    size_t i;
+
+    for (i = 0; i < n; i++) {
+        free(lines[i]);
+    }
+    free(lines);
+}
+
+static bool append_line(char ***lines, size_t *n, size_t *cap, const char *text)
+{
+    size_t len = strlen(text);
+    char *copy;
+
+    if (*n == *cap) {
+        size_t newcap = *cap ? *cap * 2 : 64;
+        char **grown = realloc(*lines, newcap * sizeof *grown);
+
+        if (grown == NULL) {
+            return false;
+        }
+        *lines = grown;
+        *cap = newcap;
+    }
+    copy = malloc(len + 1);
+    if (copy == NULL) {
+        return false;
+    }
+    memcpy(copy, text, len + 1);
+    (*lines)[(*n)++] = copy;
+    return true;
+}
+
+static bool push_frame(Asm *a, char **lines, size_t nlines)
+{
+    Frame *f;
+
+    if (a->nframes == a->capframes) {
+        size_t cap = a->capframes ? a->capframes * 2 : 4;
+        Frame *grown = realloc(a->frames, cap * sizeof *grown);
+
+        if (grown == NULL) {
+            fprintf(stderr, "out of memory\n");
+            return false;
+        }
+        a->frames = grown;
+        a->capframes = cap;
+    }
+    f = &a->frames[a->nframes++];
+    f->lines = lines;
+    f->nlines = nlines;
+    f->next = 0;
+    return true;
+}
+
+static void pop_frame(Asm *a)
+{
+    Frame *f = cur_frame(a);
+
+    free_lines(f->lines, f->nlines);
+    a->nframes--;
+}
+
+/* Reads the whole source file. A line longer than ASM_LINE_MAX is reported
+ * and kept as an empty line. */
+static bool load_source(Asm *a, char ***lines, size_t *nlines)
+{
+    FILE *f = fopen(a->path, "r");
+    char buf[ASM_LINE_MAX + 2];
+    char **out = NULL;
+    size_t n = 0;
+    size_t cap = 0;
+
+    if (f == NULL) {
+        fprintf(stderr, "%s: cannot open: %s\n", a->path, strerror(errno));
+        return false;
+    }
+    while (fgets(buf, sizeof buf, f) != NULL) {
+        size_t len = strlen(buf);
+        int ch;
+
+        if (len > 0 && buf[len - 1] == '\n') {
+            buf[--len] = '\0';
+        } else if (!feof(f)) {
+            a->line_no = (int)(n + 1);
+            diag(a, "line too long");
+            while ((ch = fgetc(f)) != '\n' && ch != EOF) {
+                ;
+            }
+            buf[0] = '\0';
+            len = 0;
+        }
+        if (len > 0 && buf[len - 1] == '\r') {
+            buf[--len] = '\0';
+        }
+        if (!append_line(&out, &n, &cap, buf)) {
+            fprintf(stderr, "out of memory\n");
+            free_lines(out, n);
+            fclose(f);
+            return false;
+        }
+    }
+    fclose(f);
+    *lines = out;
+    *nlines = n;
+    return true;
+}
+
+static void buf_add(Buf *b, const char *s, size_t n)
+{
+    if (b->oom) {
+        return;
+    }
+    if (b->len + n + 1 > b->cap) {
+        size_t cap = b->cap ? b->cap : 128;
+        char *grown;
+
+        while (cap < b->len + n + 1) {
+            cap *= 2;
+        }
+        grown = realloc(b->s, cap);
+        if (grown == NULL) {
+            b->oom = true;
+            return;
+        }
+        b->s = grown;
+        b->cap = cap;
+    }
+    memcpy(b->s + b->len, s, n);
+    b->len += n;
+    b->s[b->len] = '\0';
+}
+
+static void buf_init(Buf *b)
+{
+    memset(b, 0, sizeof *b);
+    buf_add(b, "", 0);
+}
+
+static bool name_start(int c)
+{
+    return isalpha((unsigned char)c) || c == '_';
+}
+
+static bool name_char(int c)
+{
+    return isalnum((unsigned char)c) || c == '_';
+}
+
+/* Compares an opcode with an uppercase word, ignoring case. */
+static bool word_is(const char *s, const char *word)
+{
+    for (; *s != '\0' && *word != '\0'; s++, word++) {
+        if (toupper((unsigned char)*s) != (unsigned char)*word) {
+            return false;
+        }
+    }
+    return *s == '\0' && *word == '\0';
+}
+
+static Macro *lookup_macro(const Asm *a, const char *name)
+{
+    size_t i;
+
+    for (i = 0; i < a->nmacros; i++) {
+        if (strcmp(a->macros[i].name, name) == 0) {
+            return &a->macros[i];
+        }
+    }
+    return NULL;
+}
+
+/* A call is valid only after the MAC line for that macro in the current run,
+ * so a forward call is an unknown opcode, as merlin32 reports it. */
+static const Macro *find_macro(const Asm *a, const char *name)
+{
+    Macro *m = lookup_macro(a, name);
+
+    return m != NULL && m->def_run == a->run ? m : NULL;
+}
+
+static void begin_macro(Asm *a, const char *name)
+{
+    Macro *m = lookup_macro(a, name);
+
+    if (m == NULL) {
+        Macro *grown;
+
+        if (a->nmacros == a->capmacros) {
+            size_t cap = a->capmacros ? a->capmacros * 2 : 8;
+
+            grown = realloc(a->macros, cap * sizeof *grown);
+            if (grown == NULL) {
+                fprintf(stderr, "out of memory\n");
+                return;
+            }
+            a->macros = grown;
+            a->capmacros = cap;
+        }
+        m = &a->macros[a->nmacros++];
+        memset(m, 0, sizeof *m);
+        snprintf(m->name, sizeof m->name, "%s", name);
+    } else if (m->def_run == a->run) {
+        diag(a, "duplicate label");
+    }
+    free_lines(m->lines, m->nlines);
+    m->lines = NULL;
+    m->nlines = 0;
+    m->caplines = 0;
+    m->def_run = a->run;
+    a->def = m;
+    a->in_def = true;
+}
+
+/* Stores one line of a MAC body. The body ends at EOM in the opcode field. */
+static void record_macro_line(Asm *a, const char *text)
+{
+    SrcLine ln;
+    const char *err = NULL;
+
+    if (parse_line(text, &ln, &err) && ln.has_opcode && word_is(ln.opcode, "EOM")) {
+        a->in_def = false;
+        a->def = NULL;
+        return;
+    }
+    if (!append_line(&a->def->lines, &a->def->nlines, &a->def->caplines, text)) {
+        fprintf(stderr, "out of memory\n");
+    }
+}
+
+/* Splits the operand on ';' into arguments and returns how many there are.
+ * Only the first MACRO_ARGS are kept. */
+static size_t split_args(const char *operand, bool has_operand, char args[][ASM_LINE_MAX])
+{
+    size_t count = 0;
+    const char *p = operand;
+
+    if (!has_operand) {
+        return 0;
+    }
+    for (;;) {
+        const char *semi = strchr(p, ';');
+        size_t len = semi ? (size_t)(semi - p) : strlen(p);
+
+        if (count < MACRO_ARGS) {
+            memcpy(args[count], p, len);
+            args[count][len] = '\0';
+        }
+        count++;
+        if (semi == NULL) {
+            break;
+        }
+        p = semi + 1;
+    }
+    return count;
+}
+
+/* Returns the label field of a macro body line, or false if it has none. */
+static bool body_label(const char *line, char *label, size_t cap)
+{
+    size_t n = 0;
+
+    if (line[0] == '\0' || line[0] == ' ' || line[0] == '\t' || line[0] == '*' || line[0] == ';') {
+        return false;
+    }
+    while (line[n] != '\0' && line[n] != ' ' && line[n] != '\t') {
+        if (n + 1 >= cap) {
+            return false;
+        }
+        label[n] = line[n];
+        n++;
+    }
+    label[n] = '\0';
+    return true;
+}
+
+static const LabelMap *map_find(const LabelMap *map, size_t nmap, const char *name, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i < nmap; i++) {
+        if (strlen(map[i].from) == len && strncmp(map[i].from, name, len) == 0) {
+            return &map[i];
+        }
+    }
+    return NULL;
+}
+
+/* Renames body labels to their per-expansion names. Quoted text and names
+ * prefixed by $, %, :, or ] are left alone. */
+static void rename_labels(const char *text, const LabelMap *map, size_t nmap, Buf *out)
+{
+    size_t i = 0;
+    char quote = 0;
+
+    while (text[i] != '\0') {
+        char c = text[i];
+
+        if (quote != 0) {
+            if (c == quote) {
+                quote = 0;
+            }
+            buf_add(out, &text[i], 1);
+            i++;
+        } else if (c == '"' || c == '\'') {
+            quote = c;
+            buf_add(out, &text[i], 1);
+            i++;
+        } else if (name_start(c) && (i == 0 || !(name_char(text[i - 1]) || strchr(":]$%", text[i - 1])))) {
+            size_t j = i;
+            const LabelMap *hit;
+
+            while (name_char(text[j])) {
+                j++;
+            }
+            hit = map_find(map, nmap, text + i, j - i);
+            if (hit != NULL) {
+                buf_add(out, hit->to, strlen(hit->to));
+            } else {
+                buf_add(out, text + i, j - i);
+            }
+            i = j;
+        } else {
+            buf_add(out, &text[i], 1);
+            i++;
+        }
+    }
+}
+
+/* ]0 is the argument count; ]1..]8 are the arguments. A missing argument is empty. */
+static void substitute_args(const char *text, char args[][ASM_LINE_MAX], size_t nargs, Buf *out)
+{
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        if (text[i] == ']' && text[i + 1] >= '0' && text[i + 1] <= '0' + MACRO_ARGS) {
+            size_t d = (size_t)(text[i + 1] - '0');
+
+            if (d == 0) {
+                char num[24];
+
+                snprintf(num, sizeof num, "%zu", nargs);
+                buf_add(out, num, strlen(num));
+            } else if (d <= nargs) {
+                buf_add(out, args[d - 1], strlen(args[d - 1]));
+            }
+            i += 2;
+        } else {
+            buf_add(out, &text[i], 1);
+            i++;
+        }
+    }
+}
+
+/* True if an expanded line uses a ':' local name in its operand. Merlin
+ * rejects these inside macro expansions, even though labels are accepted. */
+static bool colon_operand(const char *text)
+{
+    SrcLine ln;
+    const char *err = NULL;
+    const char *p;
+    char quote = 0;
+
+    if (!parse_line(text, &ln, &err) || !ln.has_operand) {
+        return false;
+    }
+    for (p = ln.operand; *p != '\0'; p++) {
+        if (quote != 0) {
+            if (*p == quote) {
+                quote = 0;
+            }
+        } else if (*p == '"' || *p == '\'') {
+            quote = *p;
+        } else if (*p == ':' && name_start((unsigned char)p[1]) &&
+                   (p == ln.operand || !name_char((unsigned char)p[-1]))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Expands a macro call into a new frame. Each body label gets a fresh
+ * ozunid_N name for this expansion, numbered from the shared counter. */
+static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_operand)
+{
+    char args[MACRO_ARGS][ASM_LINE_MAX];
+    size_t nargs = split_args(operand, has_operand, args);
+    size_t nbody = m->nlines;
+    LabelMap *map;
+    char **lines;
+    size_t nmap = 0;
+    size_t i;
+
+    if (a->nframes > MACRO_DEPTH_MAX) {
+        diag(a, "macro nesting too deep");
+        return;
+    }
+    map = malloc((nbody ? nbody : 1) * sizeof *map);
+    lines = calloc(nbody ? nbody : 1, sizeof *lines);
+    if (map == NULL || lines == NULL) {
+        free(map);
+        free(lines);
+        fprintf(stderr, "out of memory\n");
+        return;
+    }
+    for (i = 0; i < nbody; i++) {
+        char label[ASM_NAME_MAX + 1];
+
+        if (body_label(m->lines[i], label, sizeof label) && name_start(label[0]) &&
+            map_find(map, nmap, label, strlen(label)) == NULL) {
+            snprintf(map[nmap].from, sizeof map[nmap].from, "%s", label);
+            a->ozunid++;
+            snprintf(map[nmap].to, sizeof map[nmap].to, "ozunid_%d", a->ozunid);
+            nmap++;
+        }
+    }
+    for (i = 0; i < nbody; i++) {
+        Buf renamed;
+        Buf expanded;
+
+        buf_init(&renamed);
+        buf_init(&expanded);
+        rename_labels(m->lines[i], map, nmap, &renamed);
+        substitute_args(renamed.s, args, nargs, &expanded);
+        lines[i] = expanded.s;
+        if (renamed.oom || expanded.oom) {
+            fprintf(stderr, "out of memory\n");
+            free(renamed.s);
+            free(map);
+            free_lines(lines, nbody);
+            return;
+        }
+        free(renamed.s);
+        if (expanded.len > ASM_LINE_MAX) {
+            diag(a, "line too long");
+            expanded.s[0] = '\0';
+        } else if (colon_operand(expanded.s)) {
+            diag(a, "bad address mode: ':' local name in macro operand");
+            expanded.s[0] = '\0';
+        }
+    }
+    free(map);
+    if (!push_frame(a, lines, nbody)) {
+        free_lines(lines, nbody);
+    }
+}
+
+/* NAME args calls a macro; PMC NAME calls it with no arguments. */
+static void macro_line(Asm *a, const SrcLine *ln, bool pmc)
+{
+    const char *target = pmc ? ln->operand : ln->opcode;
+    const Macro *m;
+
+    if (pmc && !ln->has_operand) {
+        diag(a, "PMC needs a macro name");
+        return;
+    }
+    m = find_macro(a, target);
+    if (m == NULL) {
+        diag(a, "NOT MACRO");
+        return;
+    }
+    if (ln->has_label) {
+        define_label(a, ln->label, a->pc, true, false);
+    }
+    call_macro(a, m, pmc ? "" : ln->operand, !pmc && ln->has_operand);
+}
+
 /* A LUP count of zero, a negative count, or more than $8000 assembles
  * nothing, as in merlin32. */
 static void lup_begin(Asm *a, const SrcLine *ln)
@@ -1280,8 +1825,8 @@ static void lup_begin(Asm *a, const SrcLine *ln)
     a->lup_open = true;
     a->lup_skip = count <= 0 || count > 0x8000;
     a->lup_depth = a->ncond;
-    a->lup_line = a->line_no;
-    a->lup_off = a->next_off;
+    a->lup_frame = a->nframes;
+    a->lup_next = cur_frame(a)->next;
     a->lup_count = count;
     a->lup_left = a->lup_skip ? 0 : count;
 }
@@ -1291,14 +1836,14 @@ static void lup_end(Asm *a)
     if (!a->lup_open) {
         return;
     }
-    if (a->ncond != a->lup_depth) {
+    if (a->ncond != a->lup_depth || a->lup_frame != a->nframes) {
         diag(a, "Impossible to locate end of Lup");
         a->lup_open = false;
         a->lup_skip = false;
         return;
     }
     if (!a->lup_skip && --a->lup_left > 0) {
-        a->lup_jump = true;
+        cur_frame(a)->next = a->lup_next;
         return;
     }
     a->lup_open = false;
@@ -1329,7 +1874,28 @@ static void format_listing_bytes(const Asm *a, char *buf, size_t cap)
     }
 }
 
+static void assemble_statement(Asm *a, const char *text);
+
 static void assemble_line(Asm *a, const char *text)
+{
+    int32_t pc0 = a->pc;
+
+    a->lst_n = 0;
+    if (a->in_def) {
+        record_macro_line(a, text);
+    } else {
+        assemble_statement(a, text);
+    }
+
+    if (a->pass == 2 && a->listing != NULL) {
+        char hex[12];
+
+        format_listing_bytes(a, hex, sizeof hex);
+        fprintf(a->listing, "%5d  %04X  %-8s %s\n", a->line_no, (unsigned)pc0, hex, text);
+    }
+}
+
+static void assemble_statement(Asm *a, const char *text)
 {
     SrcLine ln;
     const char *err = NULL;
@@ -1338,9 +1904,7 @@ static void assemble_line(Asm *a, const char *text)
     size_t len;
     size_t i;
     bool forced = false;
-    int32_t pc0 = a->pc;
 
-    a->lst_n = 0;
     if (!parse_line(text, &ln, &err)) {
         diag(a, "%s", err);
         return;
@@ -1363,12 +1927,22 @@ static void assemble_line(Asm *a, const char *text)
             lup_end(a);
         } else if (a->lup_skip) {
             /* Body of a LUP that assembles zero times. */
+        } else if (strcmp(name, "MAC") == 0) {
+            if (!ln.has_label) {
+                diag(a, "MAC needs a name");
+            } else {
+                begin_macro(a, ln.label);
+            }
         } else if (strcmp(name, "LUP") == 0) {
             lup_begin(a, &ln);
         } else if (is_conditional(name)) {
             conditional_op(a, name, &ln);
         } else if (!cond_active(a)) {
-            skipped_op(a, name);
+            if (strcmp(name, "PMC") != 0 && find_macro(a, ln.opcode) == NULL) {
+                skipped_op(a, name);
+            }
+        } else if (strcmp(name, "PMC") == 0 || find_macro(a, ln.opcode) != NULL) {
+            macro_line(a, &ln, strcmp(name, "PMC") == 0);
         } else if (strcmp(name, "EQU") == 0 || strcmp(name, "=") == 0) {
             int32_t v = 0;
             bool defined = false;
@@ -1396,24 +1970,13 @@ static void assemble_line(Asm *a, const char *text)
             }
         }
     }
-
-    if (a->pass == 2 && a->listing != NULL) {
-        char hex[12];
-
-        format_listing_bytes(a, hex, sizeof hex);
-        fprintf(a->listing, "%5d  %04X  %-8s %s\n", a->line_no, (unsigned)pc0, hex, text);
-    }
 }
 
 static bool run_pass(Asm *a, int pass)
 {
-    FILE *f = fopen(a->path, "r");
-    char buf[ASM_LINE_MAX + 2];
+    char **lines = NULL;
+    size_t nlines = 0;
 
-    if (f == NULL) {
-        fprintf(stderr, "%s: cannot open: %s\n", a->path, strerror(errno));
-        return false;
-    }
     a->pass = pass;
     a->line_no = 0;
     a->pc = 0;
@@ -1427,56 +1990,41 @@ static bool run_pass(Asm *a, int pass)
     a->in_cond = false;
     a->lup_open = false;
     a->lup_skip = false;
-    a->lup_jump = false;
     a->ozunid = 0;
+    a->wide_seq = 0;
+    a->run++;
 
-    while (!a->ended && fgets(buf, sizeof buf, f) != NULL) {
-        size_t len = strlen(buf);
-        int ch;
+    while (a->nframes > 0) {
+        pop_frame(a);
+    }
+    if (!load_source(a, &lines, &nlines)) {
+        return false;
+    }
+    if (!push_frame(a, lines, nlines)) {
+        free_lines(lines, nlines);
+        return false;
+    }
 
-        a->line_no++;
-        if (len > 0 && buf[len - 1] == '\n') {
-            buf[--len] = '\0';
-        } else if (!feof(f)) {
-            diag(a, "line too long");
-            while ((ch = fgetc(f)) != '\n' && ch != EOF) {
-                ;
+    while (!a->ended) {
+        Frame *f = cur_frame(a);
+        const char *text;
+
+        if (f->next >= f->nlines) {
+            if (a->nframes == 1) {
+                break;
             }
+            pop_frame(a);
             continue;
         }
-        if (len > 0 && buf[len - 1] == '\r') {
-            buf[--len] = '\0';
+        text = f->lines[f->next++];
+        if (a->nframes == 1) {
+            a->line_no = (int)f->next;
         }
-        if (pass == 1 && (size_t)a->line_no > a->capwide) {
-            size_t cap = a->capwide ? a->capwide : 256;
-            uint8_t *grown;
-
-            while (cap < (size_t)a->line_no) {
-                cap *= 2;
-            }
-            grown = realloc(a->wide, cap);
-            if (grown == NULL) {
-                fprintf(stderr, "out of memory\n");
-                fclose(f);
-                return false;
-            }
-            memset(grown + a->capwide, 0, cap - a->capwide);
-            a->wide = grown;
-            a->capwide = cap;
-        }
-        a->next_off = ftell(f);
-        assemble_line(a, buf);
-        if (a->lup_jump) {
-            a->lup_jump = false;
-            if (fseek(f, a->lup_off, SEEK_SET) != 0) {
-                fprintf(stderr, "%s: cannot rewind for Lup: %s\n", a->path, strerror(errno));
-                fclose(f);
-                return false;
-            }
-            a->line_no = a->lup_line;
-        }
+        assemble_line(a, text);
     }
-    fclose(f);
+    while (a->nframes > 0) {
+        pop_frame(a);
+    }
     if (pass == 2 && a->ncond > 0) {
         diag(a, "missing FIN for DO or IF");
     }
@@ -1484,6 +2032,19 @@ static bool run_pass(Asm *a, int pass)
         diag(a, "Impossible to locate end of Lup");
     }
     return true;
+}
+
+static void free_macros(Asm *a)
+{
+    size_t i;
+
+    while (a->nframes > 0) {
+        pop_frame(a);
+    }
+    for (i = 0; i < a->nmacros; i++) {
+        free_lines(a->macros[i].lines, a->macros[i].nlines);
+    }
+    free(a->macros);
 }
 
 bool assemble_source(const char *path, FILE *listing, Binary *out)
@@ -1517,9 +2078,11 @@ bool assemble_source(const char *path, FILE *listing, Binary *out)
     }
     ok = ok && run_pass(&a, 2) && a.errors == 0;
 
+    free_macros(&a);
     free(a.syms);
     free(a.wide);
     free(a.conds);
+    free(a.frames);
     if (!ok) {
         binary_free(out);
     }

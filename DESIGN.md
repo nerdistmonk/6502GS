@@ -86,7 +86,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] Loops: `LUP`, `--^` (nested LUP is an error; `@` labels become `ozunid_N` as merlin32 does, not the manual's A/B/C countdown; `@` in a LUP over 26 iterations is an error)
 - [x] Variables: `]name` assembler variables (`=`, `EQU`, or label on a line; redefinable; persist across passes)
   - Merlin's forward reference to a variable uses its value from the previous pass. A forward reference to a label-style variable is an error in merlin; we accept it (not yet matched).
-- [ ] Macros: `MAC`, `EOM`, positional `]1`..`]9` arguments
+- [x] Macros: `MAC`, `EOM`, `]0` (argument count) and positional `]1`..`]8` arguments; `NAME args` and `PMC NAME`; body labels become `ozunid_N` per expansion, as merlin32 does; `:` local names in a macro expansion's operand are an error, as in merlin32
 - [ ] `PUT` / `USE` includes with search paths
 - [ ] Text directives: `STR`, `FLS`, `REV`, `INV`, `KBD`
 - [ ] Listing controls: `LST`, `PAG`, `TR`, `EXP`, `ERR`
