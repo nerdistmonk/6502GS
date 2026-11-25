@@ -1,0 +1,21 @@
+        ORG   $1000
+        ADR   $1234
+        ADR   $1234,$5678
+        ADR   #$123456
+        ADR   >$123456
+        ADR   <$123456
+        ADR   -1
+        ADR   $1000000
+        ADR   >-1
+        ADR   >$FFFFFF
+        ADR
+        ADR   FWD
+        ADRL  $123456
+        ADRL  $1234,$5678
+        ADRL  -1
+        ADRL  $1000000
+        ADRL  >$123456
+        ADRL  <$123456
+        ADRL  >-1
+        ADRL  FWD
+FWD     NOP

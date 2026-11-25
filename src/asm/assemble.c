@@ -59,6 +59,8 @@ typedef struct {
     int lst_n;
     bool acc16;
     bool idx16;
+    bool dummy;
+    int32_t dummy_pc;
 } Asm;
 
 static void diag(Asm *a, const char *fmt, ...)
@@ -243,7 +245,7 @@ static void emit(Asm *a, const uint8_t *bytes, int n)
     for (i = 0; i < n; i++) {
         if (a->pc > 0xFFFFFF) {
             diag(a, "program counter passes $FFFFFF");
-        } else if (a->pass == 2 && !bin_append(a->bin, bytes[i])) {
+        } else if (a->pass == 2 && !a->dummy && !bin_append(a->bin, bytes[i])) {
             diag(a, "out of memory");
         }
         if (a->pass == 2 && a->lst_n < 4) {
@@ -386,21 +388,27 @@ static void ds_directive(Asm *a, const SrcLine *ln)
     emit_fill(a, count, (uint8_t)(fill & 0xFF));
 }
 
-/* DFB/DB (width 1) and DW/DA (width 2, low byte first). */
+/*
+ * DFB/DB (width 1), DW/DA (width 2, low byte first), and ADR/ADRL (width 3/4).
+ * ADR/ADRL truncate to their width instead of range-checking, and a bare
+ * ADR/ADRL emits nothing, both as merlin32 does.
+ */
 static void data_directive(Asm *a, const SrcLine *ln, int width)
 {
     char item[ASM_LINE_MAX];
     const char *p = ln->operand;
 
     if (!ln->has_operand) {
-        diag(a, "missing data operand");
+        if (width == 1 || width == 2) {
+            diag(a, "missing data operand");
+        }
         return;
     }
     while (next_item(&p, item, sizeof item)) {
         const char *e = item;
         int32_t v = 0;
         bool defined = false;
-        uint8_t bytes[2];
+        uint8_t bytes[4];
 
         if (*e == '#') {
             e++;
@@ -422,7 +430,7 @@ static void data_directive(Asm *a, const SrcLine *ln, int width)
             uint8_t b = (bytes[0] == '>') ? (uint8_t)((v >> 8) & 0xFF) : (uint8_t)(v & 0xFF);
 
             emit(a, &b, 1);
-        } else {
+        } else if (width == 2) {
             if (bytes[0] == '>') {
                 v = (v >> 8) & 0xFFFF;
             }
@@ -433,7 +441,49 @@ static void data_directive(Asm *a, const SrcLine *ln, int width)
             bytes[0] = (uint8_t)(v & 0xFF);
             bytes[1] = (uint8_t)((v >> 8) & 0xFF);
             emit(a, bytes, 2);
+        } else {
+            int32_t shifted = (bytes[0] == '>') ? (v >> 8) : v;
+            int k;
+
+            for (k = 0; k < width; k++) {
+                bytes[k] = (uint8_t)((shifted >> (8 * k)) & 0xFF);
+            }
+            emit(a, bytes, width);
         }
+    }
+}
+
+/* DUM sets the PC for label values without emitting bytes; DEND restores the PC. */
+static void dum_directive(Asm *a, const SrcLine *ln)
+{
+    int32_t v = 0;
+    bool defined = false;
+
+    if (a->dummy) {
+        diag(a, "DUM found before DEND");
+        return;
+    }
+    if (!ln->has_operand) {
+        diag(a, "DUM needs an address");
+        return;
+    }
+    if (!eval_operand(a, ln->operand, &v, &defined)) {
+        return;
+    }
+    if (v < 0 || v > 0xFFFFFF) {
+        diag(a, "DUM address out of range");
+        return;
+    }
+    a->dummy = true;
+    a->dummy_pc = a->pc;
+    a->pc = v;
+}
+
+static void dend_directive(Asm *a)
+{
+    if (a->dummy) {
+        a->dummy = false;
+        a->pc = a->dummy_pc;
     }
 }
 
@@ -1004,6 +1054,14 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         text_directive(a, ln, false);
     } else if (strcmp(name, "DCI") == 0) {
         text_directive(a, ln, true);
+    } else if (strcmp(name, "ADR") == 0) {
+        data_directive(a, ln, 3);
+    } else if (strcmp(name, "ADRL") == 0) {
+        data_directive(a, ln, 4);
+    } else if (strcmp(name, "DUM") == 0) {
+        dum_directive(a, ln);
+    } else if (strcmp(name, "DEND") == 0) {
+        dend_directive(a);
     } else if (strcmp(name, "END") == 0) {
         a->ended = true;
     } else if (strcmp(name, "MX") == 0) {
@@ -1105,6 +1163,7 @@ static bool run_pass(Asm *a, int pass)
     a->ended = false;
     a->acc16 = false;
     a->idx16 = false;
+    a->dummy = false;
 
     while (!a->ended && fgets(buf, sizeof buf, f) != NULL) {
         size_t len = strlen(buf);
