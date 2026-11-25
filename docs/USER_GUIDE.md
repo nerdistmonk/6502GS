@@ -46,7 +46,9 @@ Each run writes files into the current directory.
 
 - **Object bytes.** A flat binary named after the source file without its
   extension (`hello.s` gives `hello`). If `SAV` or `DSK` gives a name, that
-  name is used instead. The file has no load-address header.
+  name is used instead. The file has no load-address header. A source with
+  `REL` writes an OMF v2.1 object file instead, named by `SAV` or `DSK`. Without
+  either name it prints an error, writes nothing, and exits 0, as merlin32 does.
 - **`_FileInformation.txt`.** Written on every run. It records the output name
   and file type (from `TYP`) in Merlin's file information format. An existing
   file keeps its other entries. The entry for this output replaces any old
@@ -102,10 +104,13 @@ Merlin's four-column layout: label, opcode, operand, comment.
 | Listing | `LST`, `PAG`, `TR`, `EXP` (accepted), `ERR` |
 | Control flow | `DO`, `ELSE`, `FIN`, `LUP`, `--^`, `MAC`, `EOM` / `<<<`, `PUT`, `USE` |
 
+`REL` marks the source as a relocatable module. Labels are relative to `$0000`,
+and each address or data field that depends on a label is recorded for the
+linker. The output is an OMF v2.1 object file (see Outputs). `REL` with an `ORG`
+is accepted. The linker uses the module as described in Linking.
+
 `ERR expr` fails the build when the value is nonzero or undefined. It is
 checked after both passes.
-
-Not yet implemented: `REL`.
 
 ### Conditionals
 
@@ -212,8 +217,8 @@ Differences from merlin32 in link mode:
   to stderr only.
 - **Link-file warnings.** These shapes assemble to the same bytes as merlin32,
   which accepts them silently. asm816 prints `[Warning] Link file` on stderr:
-  an `ORG` after `SNA` with no `DSK`, an `ASM` with no `ORG` before it, an `ORG`
-  at end of file with no `ASM`, and an `ASM` at end of file with no `SNA`.
+  an `ORG` after `SNA` with no `DSK`, an `ASM` after `SNA` with no `DSK` or `ORG`,
+  an `ORG` at end of file with no `ASM`, and an `ASM` at end of file with no `SNA`.
 - **Export warnings.** `ENT` of an undefined label, an `EXT` whose name is also a
   local label, and `ENT` with no label each print a `[Warning]`. The `ENT` with no
   label exports the current PC.

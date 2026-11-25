@@ -50,8 +50,8 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `e88e411` (Phase 5 stage 1). Phases 0–4 are done.
-  Phase 5 stage 2 (OMF output, REL, OMF linking) is implemented and awaiting commit.
+- Latest commit on `main`: `4408a7d` (Phase 5 stage 2). Phases 0–4 and Phase 5
+  (flat and OMF linking, standalone REL) are done.
 - Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
   Oracle tests need `-DMERLIN32_BIN=/root/merlin32/Source/merlin32
   -DMERLIN32_LIB=/root/merlin32/Library`.
