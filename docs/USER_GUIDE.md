@@ -270,8 +270,11 @@ asm816 matches merlin32 for the behaviors above. Known differences:
 - **Duplicate labels.** The message names the main source for both files,
   because includes are flattened before assembly.
 - **Equate order.** The symbol table sorts all equates by value, with
-  definition order on ties. merlin32 orders label-based equates (`X1+k`) by a
-  key that is not yet understood.
+  definition order on ties. This matches merlin32 for plain equates and for
+  equates that use one base label (`X1 = L1+k`). When equates use several
+  base labels, merlin32's order does not follow from the values, and asm816
+  does not reproduce it. Only the order of those lines differs; the values
+  are the same.
 - **Variables and symbols.** Variables (`]x`) are left out of the symbol
   table. Local labels print with a leading `_`.
 - **Forward variable references.** A forward reference to a label-style
