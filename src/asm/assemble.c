@@ -418,6 +418,9 @@ static void data_directive(Asm *a, const SrcLine *ln, int width)
 
             emit(a, &b, 1);
         } else {
+            if (bytes[0] == '>') {
+                v = (v >> 8) & 0xFFFF;
+            }
             if (v < -0x8000 || v > 0xFFFF) {
                 diag(a, "word value out of range");
                 return;
@@ -550,6 +553,11 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
         return false;
     }
     o->form = F_DIR;
+    if (s[0] == '<') {
+        o->mod = '<';
+        s++;
+        n--;
+    }
     if (n >= 2 && s[n - 2] == ',' && (toupper((unsigned char)s[n - 1]) == 'X' || toupper((unsigned char)s[n - 1]) == 'Y')) {
         o->index = (char)toupper((unsigned char)s[n - 1]);
         n -= 2;
@@ -635,6 +643,10 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
     }
 
     if (o->index == '\0' && opcode_lookup(mnem, AM_REL, &out[0])) {
+        if (o->mod != '\0') {
+            diag(a, "branch operand cannot use '<'");
+            return false;
+        }
         if (!eval_operand(a, o->expr, &v, &defined)) {
             return false;
         }
@@ -664,6 +676,23 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         wide = AM_ABS;
     }
     if (!eval_operand(a, o->expr, &v, &defined)) {
+        return false;
+    }
+    if (o->mod == '<') {
+        v &= 0xFF;
+        if (opcode_lookup(mnem, small, &out[0])) {
+            out[1] = (uint8_t)v;
+            *size = 2;
+            return true;
+        }
+        if (opcode_lookup(mnem, wide, &out[0])) {
+            if (!put_word(a, v, out + 1)) {
+                return false;
+            }
+            *size = 3;
+            return true;
+        }
+        diag(a, "%s does not support this addressing mode", mnem);
         return false;
     }
     if (a->pass == 1) {

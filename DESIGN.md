@@ -58,14 +58,14 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ### Phase 1: Core 6502 assembler
 
-- [ ] Line parser: label, opcode, operand, comment (Merlin four-column layout)
-- [ ] Expression evaluator: `+ - * /`, `< > #`, `$ % @` literals, `'x'` chars
-- [ ] 6502 opcode table and all addressing modes
-- [ ] Two-pass symbol resolution and forward references
-- [ ] Directives: `ORG`, `EQU`, `DS`, `DFB`/`DB`, `DW`, `DA`, `HEX`, `ASC`, `DCI`, `END`
-- [ ] Flat binary and listing output
-- [ ] Diagnostics with line numbers for syntax and range errors
-- [ ] Oracle tests: 6502 programs match merlin32 bytes
+- [x] Line parser: label, opcode, operand, comment (Merlin four-column layout)
+- [x] Expression evaluator: left-to-right `+ - * /` and `! . &`, `$ %` and decimal literals, `'x'`/`"x"` chars, `*`, `#`/`<`/`>` operand prefixes (`@` is not a Merlin literal; merlin32 rejects it)
+- [x] 6502 opcode table and all addressing modes
+- [x] Two-pass symbol resolution and forward references (layout passes repeat until stable; forward EQUs are zero page, forward labels absolute)
+- [x] Directives: `ORG`, `EQU`, `DS`, `DFB`/`DB`, `DW`, `DA`, `HEX`, `ASC`, `DCI`, `END`
+- [x] Flat binary and listing output
+- [x] Diagnostics with line numbers for syntax and range errors
+- [x] Oracle tests: 6502 programs match merlin32 bytes (9 cases)
 
 ### Phase 2: 65C02 and 65C816
 
