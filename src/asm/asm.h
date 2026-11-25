@@ -76,4 +76,30 @@ typedef struct {
 bool assemble_source(const char *path, const char *macro_dir, const char *listing_stem, int table_cols, Binary *out);
 void binary_free(Binary *bin);
 
+/* A label exported by ENT or imported by EXT. */
+typedef struct {
+    char name[ASM_NAME_MAX + 1];
+    int32_t value;
+    /* The defining line of an export, or the EXT line of an import. */
+    int line;
+} AsmName;
+
+/* One source file of a link. The bytes, exports, and imports are kept even
+ * when assembly reports errors, so a link can size its modules before the
+ * final pass. The caller releases it with module_free. */
+typedef struct {
+    Binary bin;
+    AsmName *exports;
+    size_t nexports;
+    AsmName *imports;
+    size_t nimports;
+} AsmModule;
+
+/* Assembles one link module that starts at start_pc. EXT names take their
+ * values from globals, and an EXT name with no global is an error when used.
+ * Errors print to stderr only when print_errors is true. */
+bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc,
+    const AsmName *globals, size_t nglobals, bool print_errors, AsmModule *out);
+void module_free(AsmModule *m);
+
 #endif

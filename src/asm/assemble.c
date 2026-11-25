@@ -141,6 +141,8 @@ typedef struct {
     bool changed;
     int line_no;
     int32_t pc;
+    /* pc at the start of each pass: the default origin, or the link origin for a module. */
+    int32_t start_pc;
     int errors;
     bool ended;
     /* Listing rows and their bytes, and the per-line state that builds a row. */
@@ -3207,7 +3209,7 @@ static bool run_pass(Asm *a, int pass)
     listing_clear(&a->lst);
     a->nfiles = 0;
     a->line_no = 0;
-    a->pc = 0x8000;
+    a->pc = a->start_pc;
     a->scope[0] = '\0';
     a->ended = false;
     a->acc16 = false;
@@ -3401,6 +3403,7 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
     a.macro_dir = macro_dir;
     a.listing = listing_stem != NULL;
     a.bin = out;
+    a.start_pc = 0x8000;
 
     ok = true;
     for (a.iter = 1; ok; a.iter++) {
