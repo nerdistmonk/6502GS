@@ -70,6 +70,17 @@ typedef struct {
     size_t ncond;
     size_t capcond;
     bool in_cond;
+    /* Open LUP: the loop body is replayed by seeking back to lup_off. */
+    bool lup_open;
+    bool lup_skip;
+    bool lup_jump;
+    size_t lup_depth;
+    int lup_line;
+    long lup_off;
+    long next_off;
+    int32_t lup_count;
+    int32_t lup_left;
+    int ozunid;
 } Asm;
 
 static void diag(Asm *a, const char *fmt, ...)
@@ -1245,6 +1256,68 @@ static void conditional_op(Asm *a, const char *name, const SrcLine *ln)
     }
 }
 
+/* A LUP count of zero, a negative count, or more than $8000 assembles
+ * nothing, as in merlin32. */
+static void lup_begin(Asm *a, const SrcLine *ln)
+{
+    int32_t count = 0;
+    bool defined = false;
+
+    if (!cond_active(a)) {
+        return;
+    }
+    if (a->lup_open) {
+        diag(a, "Impossible to locate end of Lup");
+        return;
+    }
+    if (!ln->has_operand) {
+        diag(a, "LUP needs a count");
+        return;
+    }
+    if (!eval_operand(a, ln->operand, &count, &defined)) {
+        return;
+    }
+    a->lup_open = true;
+    a->lup_skip = count <= 0 || count > 0x8000;
+    a->lup_depth = a->ncond;
+    a->lup_line = a->line_no;
+    a->lup_off = a->next_off;
+    a->lup_count = count;
+    a->lup_left = a->lup_skip ? 0 : count;
+}
+
+static void lup_end(Asm *a)
+{
+    if (!a->lup_open) {
+        return;
+    }
+    if (a->ncond != a->lup_depth) {
+        diag(a, "Impossible to locate end of Lup");
+        a->lup_open = false;
+        a->lup_skip = false;
+        return;
+    }
+    if (!a->lup_skip && --a->lup_left > 0) {
+        a->lup_jump = true;
+        return;
+    }
+    a->lup_open = false;
+    a->lup_skip = false;
+}
+
+/* Each @ label in a LUP becomes ozunid_N, numbered across the whole file. */
+static void lup_label(Asm *a, SrcLine *ln)
+{
+    if (!a->lup_open || a->lup_skip || strchr(ln->label, '@') == NULL) {
+        return;
+    }
+    a->ozunid++;
+    snprintf(ln->label, sizeof ln->label, "ozunid_%d", a->ozunid);
+    if (a->lup_count > 26 && a->lup_left == a->lup_count) {
+        diag(a, "Impossible to update Label '@' (more than 26 counts in Lup)");
+    }
+}
+
 static void format_listing_bytes(const Asm *a, char *buf, size_t cap)
 {
     size_t n = 0;
@@ -1272,6 +1345,9 @@ static void assemble_line(Asm *a, const char *text)
         diag(a, "%s", err);
         return;
     }
+    if (ln.has_label && cond_active(a)) {
+        lup_label(a, &ln);
+    }
     if (!ln.has_opcode) {
         if (ln.has_label && cond_active(a)) {
             define_label(a, ln.label, a->pc, true, false);
@@ -1283,7 +1359,13 @@ static void assemble_line(Asm *a, const char *text)
         name[i] = '\0';
         len = i;
 
-        if (is_conditional(name)) {
+        if (strcmp(name, "--^") == 0) {
+            lup_end(a);
+        } else if (a->lup_skip) {
+            /* Body of a LUP that assembles zero times. */
+        } else if (strcmp(name, "LUP") == 0) {
+            lup_begin(a, &ln);
+        } else if (is_conditional(name)) {
             conditional_op(a, name, &ln);
         } else if (!cond_active(a)) {
             skipped_op(a, name);
@@ -1343,6 +1425,10 @@ static bool run_pass(Asm *a, int pass)
     a->ncond = 0;
     a->cond_on = true;
     a->in_cond = false;
+    a->lup_open = false;
+    a->lup_skip = false;
+    a->lup_jump = false;
+    a->ozunid = 0;
 
     while (!a->ended && fgets(buf, sizeof buf, f) != NULL) {
         size_t len = strlen(buf);
@@ -1378,11 +1464,24 @@ static bool run_pass(Asm *a, int pass)
             a->wide = grown;
             a->capwide = cap;
         }
+        a->next_off = ftell(f);
         assemble_line(a, buf);
+        if (a->lup_jump) {
+            a->lup_jump = false;
+            if (fseek(f, a->lup_off, SEEK_SET) != 0) {
+                fprintf(stderr, "%s: cannot rewind for Lup: %s\n", a->path, strerror(errno));
+                fclose(f);
+                return false;
+            }
+            a->line_no = a->lup_line;
+        }
     }
     fclose(f);
     if (pass == 2 && a->ncond > 0) {
         diag(a, "missing FIN for DO or IF");
+    }
+    if (pass == 2 && a->lup_open) {
+        diag(a, "Impossible to locate end of Lup");
     }
     return true;
 }

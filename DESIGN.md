@@ -83,7 +83,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - `IF ]var` is deferred until variables and macros exist.
   - Merlin quirks matched: `ELSE` flips the current flag without checking the enclosing block; skipped lines ignore labels, EQU, and operands; 20+ nesting levels accepted.
   - Known merlin bug, not matched: after `DO 0` / `DO 0` / `ELSE`, merlin sizes the next immediate operand as 8-bit even under `MX %00`. Our output is correct. The oracle case avoids immediates there.
-- [ ] Loops: `LUP`, `--^`
+- [x] Loops: `LUP`, `--^` (nested LUP is an error; `@` labels become `ozunid_N` as merlin32 does, not the manual's A/B/C countdown; `@` in a LUP over 26 iterations is an error)
 - [x] Variables: `]name` assembler variables (`=`, `EQU`, or label on a line; redefinable; persist across passes)
   - Merlin's forward reference to a variable uses its value from the previous pass. A forward reference to a label-style variable is an error in merlin; we accept it (not yet matched).
 - [ ] Macros: `MAC`, `EOM`, positional `]1`..`]9` arguments
