@@ -252,6 +252,21 @@ static void diag(Asm *a, const char *fmt, ...)
     report(a, RANK_OTHER, "%s (line %d, file '%s').", text, a->line_no, a->path);
 }
 
+/* Warnings go to stderr in pass 2 and do not fail the build. */
+static void warn(Asm *a, const char *fmt, ...)
+{
+    char text[ASM_LINE_MAX + 256];
+    va_list ap;
+
+    if (a->pass != 2) {
+        return;
+    }
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "      => [Warning] %s (line %d, file '%s').\n", text, a->line_no, a->path);
+}
+
 static const char *stmt_opcode(const Asm *a)
 {
     return a->stmt != NULL ? a->stmt->opcode : "";
@@ -870,9 +885,13 @@ static void data_directive(Asm *a, const SrcLine *ln, int width)
             if (bytes[0] == '>') {
                 v = (v >> 8) & 0xFFFF;
             }
-            if (v < -0x8000 || v > 0xFFFF) {
+            if (v < -0x8000) {
                 diag(a, "word value out of range");
                 return;
+            }
+            if (v > 0xFFFF) {
+                warn(a, "value $%X truncated to 16 bits", (unsigned)v);
+                v &= 0xFFFF;
             }
             bytes[0] = (uint8_t)(v & 0xFF);
             bytes[1] = (uint8_t)((v >> 8) & 0xFF);
@@ -1145,11 +1164,16 @@ static bool lookup_mode(Asm *a, const char *mnem, AddrMode mode, uint8_t *op)
     return false;
 }
 
+/* Operands wider than their slot keep the low bits, as merlin32 does. */
 static bool put_word(Asm *a, int32_t v, uint8_t *out)
 {
-    if (v < 0 || v > 0xFFFF) {
+    if (v < 0 || v > 0xFFFFFF) {
         mode_error(a);
         return false;
+    }
+    if (v > 0xFFFF) {
+        warn(a, "value $%X truncated to 16 bits", (unsigned)v);
+        v &= 0xFFFF;
     }
     out[0] = (uint8_t)(v & 0xFF);
     out[1] = (uint8_t)((v >> 8) & 0xFF);
@@ -1158,9 +1182,13 @@ static bool put_word(Asm *a, int32_t v, uint8_t *out)
 
 static bool put_long(Asm *a, int32_t v, uint8_t *out)
 {
-    if (v < 0 || v > 0xFFFFFF) {
+    if (v < 0) {
         mode_error(a);
         return false;
+    }
+    if (v > 0xFFFFFF) {
+        warn(a, "value $%X truncated to 24 bits", (unsigned)v);
+        v &= 0xFFFFFF;
     }
     out[0] = (uint8_t)(v & 0xFF);
     out[1] = (uint8_t)((v >> 8) & 0xFF);

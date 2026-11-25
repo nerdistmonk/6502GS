@@ -130,7 +130,7 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
   - Divergence: duplicate-label messages name the main source for both files, because includes are flattened before assembly.
   - Accept/reject differences are not changed (for example bare `DB`, `DW $12345`, and long labels).
   - Covered by `tests/oracle/error_cases/` (`run_errors.sh`), one error per file.
-- [ ] Documentation: user guide and dialect differences from merlin32
+- [x] Documentation: user guide (`docs/USER_GUIDE.md`) and dialect differences from merlin32
 
 ### Phase 5 (later): OMF and linking
 
