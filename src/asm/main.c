@@ -7,7 +7,33 @@
 
 static void usage(FILE *out)
 {
-    fprintf(out, "usage: asm816 [--version] [-m <macro-dir>] <source.s>\n");
+    fprintf(out, "usage: asm816 [--version] [-m <macro-dir>] [-v<N>] <source.s>\n");
+}
+
+/* Parses merlin32's -v<N> flag. A bare -v is accepted and writes no table.
+ * -v<N> appends the symbol tables with N entries per row. */
+static bool parse_table_flag(const char *arg, int *table_cols)
+{
+    const char *p = arg + 2;
+    long n = 0;
+
+    if (arg[0] != '-' || arg[1] != 'v') {
+        return false;
+    }
+    if (*p == '\0') {
+        return true;
+    }
+    for (; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+        n = n * 10 + (*p - '0');
+        if (n > 255) {
+            return false;
+        }
+    }
+    *table_cols = (int)n;
+    return true;
 }
 
 /* Output names follow merlin32: the source basename without its extension,
@@ -73,6 +99,8 @@ int main(int argc, char **argv)
     const char *src;
     const char *name;
     const char *macro_dir = NULL;
+    int table_cols = -1;
+    int i;
     FILE *listing;
     Binary bin;
 
@@ -81,15 +109,19 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    if (argc == 2) {
-        src = argv[1];
-    } else if (argc == 4 && strcmp(argv[1], "-m") == 0) {
-        macro_dir = argv[2];
-        src = argv[3];
-    } else {
+    for (i = 1; i < argc - 1; i++) {
+        if (strcmp(argv[i], "-m") == 0 && i + 1 < argc - 1) {
+            macro_dir = argv[++i];
+        } else if (!parse_table_flag(argv[i], &table_cols)) {
+            usage(stderr);
+            return 1;
+        }
+    }
+    if (argc < 2 || argv[argc - 1][0] == '-') {
         usage(stderr);
         return 1;
     }
+    src = argv[argc - 1];
 
     if (!output_stem(src, stem, sizeof stem)) {
         fprintf(stderr, "asm816: cannot derive output name from %s\n", src);
@@ -102,7 +134,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (!assemble_source(src, macro_dir, listing, &bin)) {
+    if (!assemble_source(src, macro_dir, listing, table_cols, &bin)) {
         fclose(listing);
         return 1;
     }

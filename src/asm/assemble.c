@@ -19,6 +19,11 @@ typedef struct {
     /* Variable value at the start of the current sizing pass. */
     int32_t snap_value;
     bool snap_defined;
+    /* Symbol table fields: name as printed (a local ":x" shows as "_x"),
+     * definition order for ties, and the EQU operand as written. */
+    char shown[ASM_NAME_MAX + 2];
+    size_t def_order;
+    char *text;
 } Symbol;
 
 typedef enum {
@@ -129,6 +134,7 @@ typedef struct {
     size_t capframes;
     /* Per-pass instruction count; indexes wide[] so each instruction has its own slot. */
     size_t wide_seq;
+    size_t ndefs;
 } Asm;
 
 static void diag(Asm *a, const char *fmt, ...)
@@ -266,6 +272,12 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
     }
     if (s->def_line == 0) {
         s->def_line = a->line_no;
+        s->def_order = ++a->ndefs;
+        if (name[0] == ':') {
+            snprintf(s->shown, sizeof s->shown, "_%s", name + 1);
+        } else {
+            snprintf(s->shown, sizeof s->shown, "%s", name);
+        }
     } else if (s->def_line != a->line_no) {
         diag(a, "duplicate label: %s", name);
         return;
@@ -282,6 +294,29 @@ static void define_label(Asm *a, const char *name, int32_t value, bool defined, 
     if (!equ) {
         s->seen = a->iter;
     }
+}
+
+/* Keeps an EQU operand as written so the symbol table can print it. */
+static void set_equ_text(Asm *a, const char *name, const char *text)
+{
+    char key[SYM_KEY_MAX];
+    Symbol *s;
+    size_t len = strlen(text);
+
+    if (!make_key(a, name, key, sizeof key)) {
+        return;
+    }
+    s = sym_find(a, key);
+    if (s == NULL) {
+        return;
+    }
+    free(s->text);
+    s->text = malloc(len + 1);
+    if (s->text == NULL) {
+        diag(a, "out of memory");
+        return;
+    }
+    memcpy(s->text, text, len + 1);
 }
 
 /* Variables are not layout-checked like labels, so a sizing pass that
@@ -2326,6 +2361,7 @@ static void assemble_statement(Asm *a, const char *text)
                 diag(a, "EQU needs a value");
             } else if (eval_operand(a, ln.operand, &v, &defined)) {
                 define_label(a, ln.label, v, defined, true);
+                set_equ_text(a, ln.label, ln.operand);
             }
         } else if (strcmp(name, "KBD") == 0) {
             /* merlin32 reads a key only interactively. With no key it sets
@@ -2431,10 +2467,105 @@ static void free_macros(Asm *a)
     free(a->macros);
 }
 
-bool assemble_source(const char *path, const char *macro_dir, FILE *listing, Binary *out)
+static int cmp_numerical(const void *x, const void *y)
+{
+    const Symbol *p = *(const Symbol *const *)x;
+    const Symbol *q = *(const Symbol *const *)y;
+
+    if (p->is_equ != q->is_equ) {
+        return p->is_equ ? -1 : 1;
+    }
+    if (p->value != q->value) {
+        return p->value < q->value ? -1 : 1;
+    }
+    return p->def_order < q->def_order ? -1 : (p->def_order > q->def_order);
+}
+
+static int cmp_alphabetical(const void *x, const void *y)
+{
+    const Symbol *p = *(const Symbol *const *)x;
+    const Symbol *q = *(const Symbol *const *)y;
+
+    if (p->is_equ != q->is_equ) {
+        return p->is_equ ? -1 : 1;
+    }
+    return strcmp(p->shown, q->shown);
+}
+
+/* Rows of `cols` entries; each entry is a 16-wide name, " =", and an 8-wide
+ * value. The last row is not padded. */
+static void print_rows(FILE *f, const Symbol **list, size_t n, size_t cols)
+{
+    size_t i;
+
+    for (i = 0; i < n; i++) {
+        const Symbol *s = list[i];
+        char hex[8];
+        const char *val = hex;
+
+        if (s->is_equ && s->text != NULL) {
+            val = s->text;
+        } else {
+            snprintf(hex, sizeof hex, "$%04X", (unsigned)s->value & 0xFFFFu);
+        }
+        fprintf(f, "%16s =%8s", s->shown, val);
+        if ((i + 1) % cols == 0 || i + 1 == n) {
+            fputc('\n', f);
+        }
+    }
+}
+
+/* Sorts all symbols with equates first, then prints the two groups. */
+static void print_table(FILE *f, const char *title, const Symbol **all, size_t n,
+    int (*cmp)(const void *, const void *), size_t cols)
+{
+    size_t split = 0;
+
+    qsort(all, n, sizeof *all, cmp);
+    while (split < n && all[split]->is_equ) {
+        split++;
+    }
+    fprintf(f, "%s\n\n  Equates:\n", title);
+    print_rows(f, all, split, cols);
+    fprintf(f, "\n  Labels:\n");
+    print_rows(f, all + split, n - split, cols);
+    fputc('\n', f);
+}
+
+/* Appends merlin32-style symbol tables to the listing. Variables are left
+ * out. cols is the number of entries per row; 0 means 6. */
+static bool write_symbol_table(FILE *f, const Asm *a, size_t cols)
+{
+    const Symbol **all;
+    size_t i, n = 0;
+
+    all = malloc((a->nsyms + 1) * sizeof *all);
+    if (all == NULL) {
+        return false;
+    }
+    for (i = 0; i < a->nsyms; i++) {
+        const Symbol *s = &a->syms[i];
+
+        if (s->key[0] != ']' && s->defined) {
+            all[n++] = s;
+        }
+    }
+    if (cols == 0) {
+        cols = 6;
+    }
+    fputc('\n', f);
+    print_table(f, "Symbol Table - Numerical Order", all, n, cmp_numerical, cols);
+    fputc('\n', f);
+    print_table(f, "Symbol Table - Alphabetical Order", all, n, cmp_alphabetical, cols);
+    free(all);
+    return ferror(f) == 0;
+}
+
+bool assemble_source(const char *path, const char *macro_dir, FILE *listing, int table_cols, Binary *out)
 {
     Asm a;
     bool ok;
+    size_t i;
 
     memset(&a, 0, sizeof a);
     out->bytes = NULL;
@@ -2464,8 +2595,15 @@ bool assemble_source(const char *path, const char *macro_dir, FILE *listing, Bin
         }
     }
     ok = ok && run_pass(&a, 2) && a.errors == 0;
+    if (ok && table_cols >= 0 && listing != NULL && !write_symbol_table(listing, &a, (size_t)table_cols)) {
+        fprintf(stderr, "%s: cannot write symbol table\n", path);
+        ok = false;
+    }
 
     free_macros(&a);
+    for (i = 0; i < a.nsyms; i++) {
+        free(a.syms[i].text);
+    }
     free(a.syms);
     free(a.wide);
     free(a.conds);

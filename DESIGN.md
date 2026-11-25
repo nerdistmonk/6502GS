@@ -107,7 +107,11 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 ### Phase 4: Output and completeness
 
 - [x] `SAV`, `DSK`, `TYP` output hints (first name wins; `_FileInformation.txt` written)
-- [ ] Symbol table output
+- [x] Symbol table output: `-v<N>` appends merlin32's numerical and alphabetical tables to the listing with N entries per row (`-v0` is 6; a bare `-v` writes none)
+  - We write the tables into the `.lst` rather than a separate `<stem>_Output.txt` as merlin does. The oracle compares only the table text.
+  - Labels print as `$` plus the low 16 bits at four digits. Names longer than 16 characters overflow their column, as merlin does.
+  - Divergence: merlin orders label-based equates (`X1+k`) by an unexplained key. We sort all equates by value, with definition order on ties. Oracle cases use constant equates only.
+  - Variables (`]x`) are left out. Local labels print as `_name`.
 - [ ] Full listing parity for the oracle test suite
 - [ ] Error-message parity for common mistakes
 - [ ] Documentation: user guide and dialect differences from merlin32
