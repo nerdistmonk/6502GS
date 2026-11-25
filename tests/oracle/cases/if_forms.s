@@ -1,0 +1,69 @@
+ ORG $1000
+ MX %00
+ IF MX>1
+ NOP
+ FIN
+ IF MX/2
+ NOP
+ FIN
+ IF MX&1
+ NOP
+ FIN
+ IF MX=3
+ NOP
+ FIN
+ IF MX<2
+ NOP
+ FIN
+ MX %01
+ IF MX>1
+ NOP
+ FIN
+ IF MX&1
+ NOP
+ FIN
+ IF MX!3/3
+ NOP
+ FIN
+ MX %10
+ IF MX/3
+ NOP
+ FIN
+ IF MX+1&3
+ NOP
+ FIN
+ MX %11
+ IF MX-2
+ NOP
+ FIN
+ IF MX=3
+ NOP
+ FIN
+ DO 2>1
+ NOP
+ FIN
+ DO 1>2
+ NOP
+ FIN
+ DO 3=3
+ NOP
+ FIN
+ DO 1<2
+ NOP
+ FIN
+ IF #=]1
+ NOP
+ FIN
+TST MAC
+ IF #=]1
+ NOP
+ FIN
+ IF 4=]1
+ NOP
+ FIN
+ <<<
+ TST #$12
+ TST 4X
+ TST (ab)
+ TST
+ END

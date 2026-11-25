@@ -18,10 +18,11 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 cp "$src" "$work/$stem.s"
+cp -r "$(dirname "$0")/fixtures/." "$work/"
 
 (cd "$work" && "$merlin" -v "$lib" "$stem.s" >/dev/null)
 mv "$work/$stem" "$work/$stem.oracle"
 
-(cd "$work" && "$asm816" "$stem.s")
+(cd "$work" && "$asm816" -m "$lib" "$stem.s")
 
 cmp "$work/$stem.oracle" "$work/$stem"

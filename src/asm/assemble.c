@@ -43,6 +43,7 @@ typedef struct {
 
 #define MACRO_ARGS 8
 #define MACRO_DEPTH_MAX 15
+#define INCLUDE_PATH_MAX 1024
 
 typedef struct {
     char name[ASM_NAME_MAX + 1];
@@ -76,6 +77,8 @@ typedef struct {
 
 typedef struct {
     const char *path;
+    /* Directory searched by USE when a file is not beside the source; may be NULL. */
+    const char *macro_dir;
     FILE *listing;
     Binary *bin;
     Symbol *syms;
@@ -193,6 +196,13 @@ static bool is_mx_token(const char *s)
 {
     return toupper((unsigned char)s[0]) == 'M' && toupper((unsigned char)s[1]) == 'X'
         && !isalnum((unsigned char)s[2]) && s[2] != '_';
+}
+
+/* An IF operand c?]n, such as #=]1: its first character is compared with the
+ * first character of argument n. The middle character is ignored. */
+static bool char_test_operand(const char *op)
+{
+    return strlen(op) == 4 && op[2] == ']' && op[3] >= '0' && op[3] <= '0' + MACRO_ARGS;
 }
 
 static bool lookup_sym(void *ctx, const char *name, int32_t *value)
@@ -1278,7 +1288,7 @@ static void skipped_op(Asm *a, const char *name)
     diag(a, "unknown opcode or directive: %s", name);
 }
 
-static bool eval_condition(Asm *a, const char *text, int32_t *value)
+static bool eval_cond_expr(Asm *a, const char *text, int32_t *value)
 {
     bool defined = false;
     bool ok;
@@ -1287,6 +1297,35 @@ static bool eval_condition(Asm *a, const char *text, int32_t *value)
     ok = eval_operand(a, text, value, &defined);
     a->in_cond = false;
     return ok;
+}
+
+/* A DO or IF operand is an expression, optionally compared with <, >, or =. */
+static bool eval_condition(Asm *a, const char *text, int32_t *value)
+{
+    const char *rel = strpbrk(text, "<>=");
+    char lhs[ASM_LINE_MAX];
+    int32_t l = 0;
+    int32_t r = 0;
+
+    if (rel == NULL || rel == text) {
+        return eval_cond_expr(a, text, value);
+    }
+    snprintf(lhs, sizeof lhs, "%.*s", (int)(rel - text), text);
+    if (!eval_cond_expr(a, lhs, &l) || !eval_cond_expr(a, rel + 1, &r)) {
+        return false;
+    }
+    switch (*rel) {
+    case '<':
+        *value = l < r;
+        break;
+    case '>':
+        *value = l > r;
+        break;
+    default:
+        *value = l == r;
+        break;
+    }
+    return true;
 }
 
 static void conditional_op(Asm *a, const char *name, const SrcLine *ln)
@@ -1312,8 +1351,9 @@ static void conditional_op(Asm *a, const char *name, const SrcLine *ln)
     if (cond_active(a)) {
         if (!ln->has_operand) {
             diag(a, "%s needs an operand", name);
-        } else if (strcmp(name, "IF") == 0 && !is_mx_token(ln->operand)) {
-            diag(a, "IF supports only MX tests");
+        } else if (strcmp(name, "IF") == 0 && char_test_operand(ln->operand)) {
+            /* Outside a macro the argument is empty, so the test is false. */
+            value = false;
         } else {
             int32_t v = 0;
 
@@ -1396,20 +1436,32 @@ static void pop_frame(Asm *a)
     a->nframes--;
 }
 
-/* Reads the whole source file. A line longer than ASM_LINE_MAX is reported
- * and kept as an empty line. */
-static bool load_source(Asm *a, char ***lines, size_t *nlines)
+/* Compares an opcode with an uppercase word, ignoring case. */
+static bool word_is(const char *s, const char *word)
 {
-    FILE *f = fopen(a->path, "r");
+    for (; *s != '\0' && *word != '\0'; s++, word++) {
+        if (toupper((unsigned char)*s) != (unsigned char)*word) {
+            return false;
+        }
+    }
+    return *s == '\0' && *word == '\0';
+}
+
+/* Merlin32 ends a macro with EOM or with the alternate form <<<. */
+static bool is_macro_end(const SrcLine *ln)
+{
+    return ln->has_opcode && (word_is(ln->opcode, "EOM") || strcmp(ln->opcode, "<<<") == 0);
+}
+
+/* Reads every line of f and closes it. A line longer than ASM_LINE_MAX is
+ * reported and kept as an empty line. */
+static bool read_lines(Asm *a, FILE *f, char ***lines, size_t *nlines)
+{
     char buf[ASM_LINE_MAX + 2];
     char **out = NULL;
     size_t n = 0;
     size_t cap = 0;
 
-    if (f == NULL) {
-        fprintf(stderr, "%s: cannot open: %s\n", a->path, strerror(errno));
-        return false;
-    }
     while (fgets(buf, sizeof buf, f) != NULL) {
         size_t len = strlen(buf);
         int ch;
@@ -1436,6 +1488,156 @@ static bool load_source(Asm *a, char ***lines, size_t *nlines)
         }
     }
     fclose(f);
+    *lines = out;
+    *nlines = n;
+    return true;
+}
+
+static bool load_source(Asm *a, char ***lines, size_t *nlines)
+{
+    FILE *f = fopen(a->path, "r");
+
+    if (f == NULL) {
+        fprintf(stderr, "%s: cannot open: %s\n", a->path, strerror(errno));
+        return false;
+    }
+    return read_lines(a, f, lines, nlines);
+}
+
+/* Name PUT and USE open: three or more characters with no '.' get ".s";
+ * anything else is used as written. */
+static bool include_name(const char *operand, char *out, size_t cap)
+{
+    size_t n = strlen(operand);
+    int len;
+
+    if (n >= 3 && strchr(operand, '.') == NULL) {
+        len = snprintf(out, cap, "%s.s", operand);
+    } else {
+        len = snprintf(out, cap, "%s", operand);
+    }
+    return len >= 0 && (size_t)len < cap;
+}
+
+/* Directory of path; "." when the path has no directory part. */
+static bool dir_of(const char *path, char *dir, size_t cap)
+{
+    const char *slash = strrchr(path, '/');
+    size_t n = slash ? (size_t)(slash - path) : 0;
+
+    if (slash == NULL) {
+        return snprintf(dir, cap, ".") > 0;
+    }
+    if (n >= cap) {
+        return false;
+    }
+    memcpy(dir, path, n);
+    dir[n] = '\0';
+    return true;
+}
+
+static FILE *open_in_dir(const char *dir, const char *name)
+{
+    char path[INCLUDE_PATH_MAX];
+    int len;
+
+    len = snprintf(path, sizeof path, "%s/%s", dir, name);
+    if (len < 0 || (size_t)len >= sizeof path) {
+        return NULL;
+    }
+    return fopen(path, "r");
+}
+
+/* Appends the lines of one PUT or USE file. Included files take no PUT or USE
+ * lines of their own. A USE file found only in the macro directory keeps just
+ * its MAC...EOM blocks, as merlin32 does. */
+static bool include_file(Asm *a, const char *operand, bool use, char ***out, size_t *nout, size_t *cap)
+{
+    char name[INCLUDE_PATH_MAX];
+    char dir[INCLUDE_PATH_MAX];
+    char **lines = NULL;
+    size_t nlines = 0;
+    bool macro_only = false;
+    bool in_mac = false;
+    FILE *f = NULL;
+    size_t i;
+
+    if (operand[0] == '\0') {
+        return true;
+    }
+    if (include_name(operand, name, sizeof name)) {
+        if (dir_of(a->path, dir, sizeof dir)) {
+            f = open_in_dir(dir, name);
+        }
+        if (f == NULL && use && a->macro_dir != NULL) {
+            f = open_in_dir(a->macro_dir, name);
+            macro_only = f != NULL;
+        }
+    }
+    if (f == NULL) {
+        diag(a, "Impossible to open Source file '%s'.", name);
+        return true;
+    }
+    if (!read_lines(a, f, &lines, &nlines)) {
+        return false;
+    }
+    for (i = 0; i < nlines; i++) {
+        SrcLine ln;
+        const char *err = NULL;
+        bool has_op = parse_line(lines[i], &ln, &err) && ln.has_opcode;
+        bool keep = true;
+        bool is_eom = has_op && is_macro_end(&ln);
+
+        if (has_op && (word_is(ln.opcode, "PUT") || word_is(ln.opcode, "USE"))) {
+            keep = false;
+        } else if (has_op && word_is(ln.opcode, "MAC")) {
+            in_mac = true;
+        } else if (is_eom) {
+            in_mac = false;
+        }
+        if (macro_only && !in_mac && !is_eom) {
+            keep = false;
+        }
+        if (keep && !append_line(out, nout, cap, lines[i])) {
+            free_lines(lines, nlines);
+            return false;
+        }
+    }
+    free_lines(lines, nlines);
+    return true;
+}
+
+/* Replaces each PUT and USE line of the source with the file it names, so
+ * included lines take part in macros, LUP, and conditionals as if written
+ * in place. */
+static bool expand_includes(Asm *a, char ***lines, size_t *nlines)
+{
+    char **out = NULL;
+    size_t n = 0;
+    size_t cap = 0;
+    size_t i;
+
+    for (i = 0; i < *nlines; i++) {
+        SrcLine ln;
+        const char *err = NULL;
+        bool ok;
+
+        a->line_no = (int)(i + 1);
+        if (parse_line((*lines)[i], &ln, &err) && ln.has_opcode &&
+            (word_is(ln.opcode, "PUT") || word_is(ln.opcode, "USE"))) {
+            ok = include_file(a, ln.has_operand ? ln.operand : "", word_is(ln.opcode, "USE"), &out, &n, &cap);
+        } else {
+            ok = append_line(&out, &n, &cap, (*lines)[i]);
+        }
+        if (!ok) {
+            free_lines(out, n);
+            free_lines(*lines, *nlines);
+            *lines = NULL;
+            *nlines = 0;
+            return false;
+        }
+    }
+    free_lines(*lines, *nlines);
     *lines = out;
     *nlines = n;
     return true;
@@ -1480,17 +1682,6 @@ static bool name_start(int c)
 static bool name_char(int c)
 {
     return isalnum((unsigned char)c) || c == '_';
-}
-
-/* Compares an opcode with an uppercase word, ignoring case. */
-static bool word_is(const char *s, const char *word)
-{
-    for (; *s != '\0' && *word != '\0'; s++, word++) {
-        if (toupper((unsigned char)*s) != (unsigned char)*word) {
-            return false;
-        }
-    }
-    return *s == '\0' && *word == '\0';
 }
 
 static Macro *lookup_macro(const Asm *a, const char *name)
@@ -1553,7 +1744,7 @@ static void record_macro_line(Asm *a, const char *text)
     SrcLine ln;
     const char *err = NULL;
 
-    if (parse_line(text, &ln, &err) && ln.has_opcode && word_is(ln.opcode, "EOM")) {
+    if (parse_line(text, &ln, &err) && is_macro_end(&ln)) {
         a->in_def = false;
         a->def = NULL;
         return;
@@ -1687,6 +1878,32 @@ static void substitute_args(const char *text, char args[][ASM_LINE_MAX], size_t 
     }
 }
 
+/* An IF with a c?]n operand is decided while the arguments are known, so the
+ * line becomes IF 1 or IF 0. Returns false for every other line. */
+static bool resolve_char_test(const char *text, char args[][ASM_LINE_MAX], size_t nargs, Buf *out)
+{
+    SrcLine ln;
+    const char *err = NULL;
+    char line[ASM_NAME_MAX + 16];
+    size_t n;
+    char first = '\0';
+
+    if (!parse_line(text, &ln, &err) || !ln.has_opcode || !word_is(ln.opcode, "IF") ||
+        !ln.has_operand || !char_test_operand(ln.operand)) {
+        return false;
+    }
+    n = (size_t)(ln.operand[3] - '0');
+    if (n == 0) {
+        first = (char)('0' + nargs);
+    } else if (n <= nargs) {
+        first = args[n - 1][0];
+    }
+    snprintf(line, sizeof line, "%s IF %d", ln.has_label ? ln.label : "",
+             first != '\0' && first == ln.operand[0]);
+    buf_add(out, line, strlen(line));
+    return true;
+}
+
 /* True if an expanded line uses a ':' local name in its operand. Merlin
  * rejects these inside macro expansions, even though labels are accepted. */
 static bool colon_operand(const char *text)
@@ -1756,7 +1973,9 @@ static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_ope
         buf_init(&renamed);
         buf_init(&expanded);
         rename_labels(m->lines[i], map, nmap, &renamed);
-        substitute_args(renamed.s, args, nargs, &expanded);
+        if (!resolve_char_test(renamed.s, args, nargs, &expanded)) {
+            substitute_args(renamed.s, args, nargs, &expanded);
+        }
         lines[i] = expanded.s;
         if (renamed.oom || expanded.oom) {
             fprintf(stderr, "out of memory\n");
@@ -1936,6 +2155,9 @@ static void assemble_statement(Asm *a, const char *text)
         } else if (strcmp(name, "LUP") == 0) {
             lup_begin(a, &ln);
         } else if (is_conditional(name)) {
+            if (ln.has_label) {
+                define_label(a, ln.label, a->pc, true, false);
+            }
             conditional_op(a, name, &ln);
         } else if (!cond_active(a)) {
             if (strcmp(name, "PMC") != 0 && find_macro(a, ln.opcode) == NULL) {
@@ -2000,6 +2222,9 @@ static bool run_pass(Asm *a, int pass)
     if (!load_source(a, &lines, &nlines)) {
         return false;
     }
+    if (!expand_includes(a, &lines, &nlines)) {
+        return false;
+    }
     if (!push_frame(a, lines, nlines)) {
         free_lines(lines, nlines);
         return false;
@@ -2047,7 +2272,7 @@ static void free_macros(Asm *a)
     free(a->macros);
 }
 
-bool assemble_source(const char *path, FILE *listing, Binary *out)
+bool assemble_source(const char *path, const char *macro_dir, FILE *listing, Binary *out)
 {
     Asm a;
     bool ok;
@@ -2057,6 +2282,7 @@ bool assemble_source(const char *path, FILE *listing, Binary *out)
     out->len = 0;
     out->cap = 0;
     a.path = path;
+    a.macro_dir = macro_dir;
     a.listing = listing;
     a.bin = out;
 

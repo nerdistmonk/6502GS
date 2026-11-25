@@ -7,7 +7,7 @@
 
 static void usage(FILE *out)
 {
-    fprintf(out, "usage: asm816 [--version] <source.s>\n");
+    fprintf(out, "usage: asm816 [--version] [-m <macro-dir>] <source.s>\n");
 }
 
 /* Output names follow merlin32: the source basename without its extension,
@@ -48,6 +48,8 @@ int main(int argc, char **argv)
 {
     char stem[PATH_BUF];
     char lst_name[PATH_BUF + 4];
+    const char *src;
+    const char *macro_dir = NULL;
     FILE *listing;
     Binary bin;
 
@@ -56,13 +58,18 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    if (argc != 2) {
+    if (argc == 2) {
+        src = argv[1];
+    } else if (argc == 4 && strcmp(argv[1], "-m") == 0) {
+        macro_dir = argv[2];
+        src = argv[3];
+    } else {
         usage(stderr);
         return 1;
     }
 
-    if (!output_stem(argv[1], stem, sizeof stem)) {
-        fprintf(stderr, "asm816: cannot derive output name from %s\n", argv[1]);
+    if (!output_stem(src, stem, sizeof stem)) {
+        fprintf(stderr, "asm816: cannot derive output name from %s\n", src);
         return 1;
     }
     snprintf(lst_name, sizeof lst_name, "%s.lst", stem);
@@ -72,7 +79,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (!assemble_source(argv[1], listing, &bin)) {
+    if (!assemble_source(src, macro_dir, listing, &bin)) {
         fclose(listing);
         return 1;
     }

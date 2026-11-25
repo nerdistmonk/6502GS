@@ -79,8 +79,8 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ### Phase 3: Control flow and text
 
-- [x] Conditionals: `DO`, `ELSE`, `FIN`, nested (no depth limit), `IF MX` tests
-  - `IF ]var` is deferred until variables and macros exist.
+- [x] Conditionals: `DO`, `ELSE`, `FIN`, nested (no depth limit), `IF` on MX expressions (`MX>1`, `MX/2`, `MX&1`, `MX=3`), and `DO`/`IF` comparisons with `<`, `>`, `=`
+  - `IF c?]n` tests compare the first character of argument n with c, as in merlin32. They are decided at macro expansion.
   - Merlin quirks matched: `ELSE` flips the current flag without checking the enclosing block; skipped lines ignore labels, EQU, and operands; 20+ nesting levels accepted.
   - Known merlin bug, not matched: after `DO 0` / `DO 0` / `ELSE`, merlin sizes the next immediate operand as 8-bit even under `MX %00`. Our output is correct. The oracle case avoids immediates there.
 - [x] Loops: `LUP`, `--^` (nested LUP is an error; `@` labels become `ozunid_N` as merlin32 does, not the manual's A/B/C countdown; `@` in a LUP over 26 iterations is an error)
