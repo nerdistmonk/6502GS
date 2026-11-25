@@ -70,10 +70,10 @@ Legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 ### Phase 2: 65C02 and 65C816
 
 - [x] 65C02 opcodes and addressing modes (zero-page indirect, `(abs,X)` JMP, `BRA`, `STZ`, `TSB`/`TRB`, `INC A`/`DEC A`, `PHX`/`PHY`/`PLX`/`PLY`, `WAI`/`STP`)
-- [ ] 65C816 opcodes, long addressing, stack-relative modes
+- [x] 65C816 opcodes, long addressing (`>` prefix, `JML`/`JSL`), `[dp]`, `[dp],Y`, stack-relative, block moves, `BRL`/`PER`, `REP`/`SEP` immediate width
 - [ ] `XC`, `MX`, and width tracking across branches
 - [ ] Directives: `ADR`, `ADRL`, `REL`, `DUM`/`DEND`
-- [ ] Oracle tests for 65C816 programs
+- [x] Oracle tests for 65C816 programs (`m816_opcodes`)
 
 ### Phase 3: Control flow and text
 

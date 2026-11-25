@@ -50,7 +50,7 @@ static bool parse_number(Parser *ps, int base, ExprValue *v)
     }
     while ((d = digit_value((unsigned char)*p, base)) >= 0) {
         n = n * base + d;
-        if (n > 0xFFFF) {
+        if (n > 0xFFFFFF) {
             return set_err(ps, "number too large");
         }
         p++;

@@ -25,7 +25,10 @@ typedef enum {
     F_DIR,
     F_IND,
     F_IZX,
-    F_IZY
+    F_IZY,
+    F_IDL,
+    F_IDY,
+    F_SRY
 } Form;
 
 typedef struct {
@@ -52,8 +55,10 @@ typedef struct {
     int32_t pc;
     int errors;
     bool ended;
-    uint8_t lst[3];
+    uint8_t lst[4];
     int lst_n;
+    bool acc16;
+    bool idx16;
 } Asm;
 
 static void diag(Asm *a, const char *fmt, ...)
@@ -236,12 +241,12 @@ static void emit(Asm *a, const uint8_t *bytes, int n)
     int i;
 
     for (i = 0; i < n; i++) {
-        if (a->pc > 0xFFFF) {
-            diag(a, "program counter passes $FFFF");
+        if (a->pc > 0xFFFFFF) {
+            diag(a, "program counter passes $FFFFFF");
         } else if (a->pass == 2 && !bin_append(a->bin, bytes[i])) {
             diag(a, "out of memory");
         }
-        if (a->pass == 2 && a->lst_n < 3) {
+        if (a->pass == 2 && a->lst_n < 4) {
             a->lst[a->lst_n++] = bytes[i];
         }
         a->pc++;
@@ -333,7 +338,7 @@ static void org_directive(Asm *a, const SrcLine *ln)
     if (!eval_operand(a, ln->operand, &v, &defined)) {
         return;
     }
-    if (v < 0 || v > 0xFFFF) {
+    if (v < 0 || v > 0xFFFFFF) {
         diag(a, "ORG address out of range");
         return;
     }
@@ -530,13 +535,33 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
     if (s[0] == '#') {
         o->form = F_IMM;
         p = s + 1;
-        if (*p == '<' || *p == '>') {
+        if (*p == '<' || *p == '>' || *p == '^') {
             o->mod = *p;
             p++;
         }
         return set_expr(a, o, p, strlen(p));
     }
+    if (s[0] == '[') {
+        if (n >= 5 && strcmp(s + n - 3, "],Y") == 0) {
+            o->form = F_IDY;
+            return set_expr(a, o, s + 1, n - 4);
+        }
+        if (s[n - 1] == ']') {
+            o->form = F_IDL;
+            return set_expr(a, o, s + 1, n - 2);
+        }
+        diag(a, "bad bracket operand");
+        return false;
+    }
     if (s[0] == '(') {
+        if (n >= 5 && strcmp(s + n - 5, ",S),Y") == 0) {
+            o->form = F_SRY;
+            return set_expr(a, o, s + 1, n - 6);
+        }
+        if (n >= 4 && strcmp(s + n - 3, ",S)") == 0) {
+            diag(a, "(sr,S) needs ,Y");
+            return false;
+        }
         if (n >= 4 && strcmp(s + n - 3, ",X)") == 0) {
             o->form = F_IZX;
             return set_expr(a, o, s + 1, n - 4);
@@ -553,12 +578,12 @@ static bool parse_operand(Asm *a, const char *s, Operand *o)
         return false;
     }
     o->form = F_DIR;
-    if (s[0] == '<') {
-        o->mod = '<';
+    if (s[0] == '<' || s[0] == '>') {
+        o->mod = s[0];
         s++;
         n--;
     }
-    if (n >= 2 && s[n - 2] == ',' && (toupper((unsigned char)s[n - 1]) == 'X' || toupper((unsigned char)s[n - 1]) == 'Y')) {
+    if (n >= 2 && s[n - 2] == ',' && (toupper((unsigned char)s[n - 1]) == 'X' || toupper((unsigned char)s[n - 1]) == 'Y' || toupper((unsigned char)s[n - 1]) == 'S')) {
         o->index = (char)toupper((unsigned char)s[n - 1]);
         n -= 2;
     }
@@ -582,6 +607,96 @@ static bool put_word(Asm *a, int32_t v, uint8_t *out)
     }
     out[0] = (uint8_t)(v & 0xFF);
     out[1] = (uint8_t)((v >> 8) & 0xFF);
+    return true;
+}
+
+static bool put_long(Asm *a, int32_t v, uint8_t *out)
+{
+    if (v < 0 || v > 0xFFFFFF) {
+        diag(a, "address out of range");
+        return false;
+    }
+    out[0] = (uint8_t)(v & 0xFF);
+    out[1] = (uint8_t)((v >> 8) & 0xFF);
+    out[2] = (uint8_t)((v >> 16) & 0xFF);
+    return true;
+}
+
+/* REP and SEP are always 8-bit immediates; their operand updates the state
+ * that later immediates use. */
+static bool imm_is_wide(const Asm *a, const char *mnem)
+{
+    if (strcmp(mnem, "REP") == 0 || strcmp(mnem, "SEP") == 0 ||
+        strcmp(mnem, "COP") == 0 || strcmp(mnem, "WDM") == 0) {
+        return false;
+    }
+    if (strcmp(mnem, "LDX") == 0 || strcmp(mnem, "LDY") == 0 ||
+        strcmp(mnem, "CPX") == 0 || strcmp(mnem, "CPY") == 0) {
+        return a->idx16;
+    }
+    return a->acc16;
+}
+
+/* [dp], [dp],Y and (sr,S),Y. The [abs] form is JML/JMP only. */
+static bool encode_bracket(Asm *a, const char *mnem, const Operand *o, uint8_t *out, int *size)
+{
+    int32_t v = 0;
+    bool defined = false;
+    AddrMode mode = (o->form == F_IDL) ? AM_IDL : (o->form == F_IDY) ? AM_IDY : AM_SRY;
+
+    if (!eval_operand(a, o->expr, &v, &defined)) {
+        return false;
+    }
+    if (o->form == F_IDL && !opcode_lookup(mnem, AM_IDL, &out[0])) {
+        if (!opcode_lookup(mnem, AM_IAL, &out[0])) {
+            diag(a, "%s does not support this addressing mode", mnem);
+            return false;
+        }
+        if (!put_word(a, v, out + 1)) {
+            return false;
+        }
+        *size = 3;
+        return true;
+    }
+    if (!lookup_mode(a, mnem, mode, &out[0])) {
+        return false;
+    }
+    if (v < 0 || v > 0xFF) {
+        diag(a, "indirect operand must be zero page");
+        return false;
+    }
+    out[1] = (uint8_t)v;
+    *size = 2;
+    return true;
+}
+
+/* MVN and MVP: operand is "src,dst" and the bytes are opcode, dst, src. */
+static bool block_move(Asm *a, const char *mnem, const SrcLine *ln, uint8_t *out, int *size)
+{
+    char first[ASM_LINE_MAX];
+    const char *comma = strchr(ln->operand, ',');
+    size_t len;
+    int32_t src = 0;
+    int32_t dst = 0;
+    bool defined = false;
+
+    if (comma == NULL || comma == ln->operand || comma[1] == '\0') {
+        diag(a, "%s needs two bank operands", mnem);
+        return false;
+    }
+    len = (size_t)(comma - ln->operand);
+    memcpy(first, ln->operand, len);
+    first[len] = '\0';
+    if (!eval_operand(a, first, &src, &defined) || !eval_operand(a, comma + 1, &dst, &defined)) {
+        return false;
+    }
+    if (src < 0 || src > 0xFF || dst < 0 || dst > 0xFF) {
+        diag(a, "%s bank must be 0..$FF", mnem);
+        return false;
+    }
+    out[1] = (uint8_t)dst;
+    out[2] = (uint8_t)src;
+    *size = 3;
     return true;
 }
 
@@ -615,8 +730,25 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         if (!lookup_mode(a, mnem, AM_IMM, &out[0]) || !eval_operand(a, o->expr, &v, &defined)) {
             return false;
         }
-        out[1] = (o->mod == '>') ? (uint8_t)((v >> 8) & 0xFF) : (uint8_t)(v & 0xFF);
-        *size = 2;
+        {
+            bool wide = imm_is_wide(a, mnem);
+            int shift = (o->mod == '>') ? 8 : (o->mod == '^') ? 16 : 0;
+            int32_t part = (v >> shift) & (wide ? 0xFFFF : 0xFF);
+
+            out[1] = (uint8_t)(part & 0xFF);
+            out[2] = (uint8_t)((part >> 8) & 0xFF);
+            *size = wide ? 3 : 2;
+        }
+        if (strcmp(mnem, "REP") == 0 || strcmp(mnem, "SEP") == 0) {
+            bool set = mnem[0] == 'R';
+
+            if (v & 0x20) {
+                a->acc16 = set;
+            }
+            if (v & 0x10) {
+                a->idx16 = set;
+            }
+        }
         return true;
     case F_IZX:
     case F_IZY:
@@ -664,6 +796,10 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         }
         diag(a, "%s does not support this addressing mode", mnem);
         return false;
+    case F_IDL:
+    case F_IDY:
+    case F_SRY:
+        return encode_bracket(a, mnem, o, out, size);
     case F_DIR:
         break;
     }
@@ -691,6 +827,31 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         return true;
     }
 
+    if (o->index == '\0' && opcode_lookup(mnem, AM_RL16, &out[0])) {
+        if (o->mod != '\0') {
+            diag(a, "branch operand cannot use a prefix");
+            return false;
+        }
+        if (!eval_operand(a, o->expr, &v, &defined)) {
+            return false;
+        }
+        if (defined) {
+            int32_t off = v - (a->pc + 3);
+
+            if (off < -32768 || off > 32767) {
+                diag(a, "branch target out of range");
+                return false;
+            }
+            out[1] = (uint8_t)(off & 0xFF);
+            out[2] = (uint8_t)((off >> 8) & 0xFF);
+        } else {
+            out[1] = 0;
+            out[2] = 0;
+        }
+        *size = 3;
+        return true;
+    }
+
     if (o->index == 'X') {
         small = AM_ZPX;
         wide = AM_ABX;
@@ -703,6 +864,31 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
     }
     if (!eval_operand(a, o->expr, &v, &defined)) {
         return false;
+    }
+    if (o->index == 'S') {
+        if (!lookup_mode(a, mnem, AM_SR, &out[0])) {
+            return false;
+        }
+        if (v < 0 || v > 0xFF) {
+            diag(a, "stack-relative operand must be 0..$FF");
+            return false;
+        }
+        out[1] = (uint8_t)v;
+        *size = 2;
+        return true;
+    }
+    if (o->mod == '>') {
+        AddrMode lm = (o->index == 'X') ? AM_ALX : AM_ALG;
+
+        if (o->index != '\0' && o->index != 'X') {
+            diag(a, "%s has no long,%c mode", mnem, o->index);
+            return false;
+        }
+        if (!lookup_mode(a, mnem, lm, &out[0]) || !put_long(a, v, out + 1)) {
+            return false;
+        }
+        *size = 4;
+        return true;
     }
     if (o->mod == '<') {
         v &= 0xFF;
@@ -750,6 +936,13 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
         *size = 2;
         return true;
     }
+    if (o->index == '\0' && opcode_lookup(mnem, AM_ALG, &out[0])) {
+        if (!put_long(a, v, out + 1)) {
+            return false;
+        }
+        *size = 4;
+        return true;
+    }
     diag(a, "%s does not support this addressing mode", mnem);
     return false;
 }
@@ -757,9 +950,15 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
 static void instruction(Asm *a, const char *mnem, bool forced, const SrcLine *ln)
 {
     Operand o;
-    uint8_t bytes[3] = { 0, 0, 0 };
+    uint8_t bytes[4] = { 0, 0, 0, 0 };
     int size = 0;
 
+    if (opcode_lookup(mnem, AM_BLK, &bytes[0])) {
+        if (block_move(a, mnem, ln, bytes, &size)) {
+            emit(a, bytes, size);
+        }
+        return;
+    }
     if (!parse_operand(a, ln->operand, &o)) {
         return;
     }
@@ -879,6 +1078,8 @@ static bool run_pass(Asm *a, int pass)
     a->pc = 0;
     a->scope[0] = '\0';
     a->ended = false;
+    a->acc16 = false;
+    a->idx16 = false;
 
     while (!a->ended && fgets(buf, sizeof buf, f) != NULL) {
         size_t len = strlen(buf);

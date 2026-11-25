@@ -38,7 +38,16 @@ typedef enum {
     AM_IZY,
     AM_IZP,
     AM_IAX,
-    AM_REL
+    AM_REL,
+    AM_ALG,
+    AM_ALX,
+    AM_IDL,
+    AM_IDY,
+    AM_IAL,
+    AM_SR,
+    AM_SRY,
+    AM_BLK,
+    AM_RL16
 } AddrMode;
 
 /* True if the 3-letter mnemonic names any 6502 instruction. */

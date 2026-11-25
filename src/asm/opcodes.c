@@ -120,18 +120,66 @@ static const OpEntry TABLE_65C02[] = {
 
 #define TABLE_COUNT(t) (sizeof(t) / sizeof((t)[0]))
 
+/* 65816 additions. merlin32 accepts these in the default (16-bit off) state
+ * and the M/X width comes from REP/SEP, see assemble.c. */
+static const OpEntry TABLE_65816[] = {
+    { "ADC", AM_ALG, 0x6F }, { "ADC", AM_ALX, 0x7F }, { "ADC", AM_IDL, 0x67 },
+    { "ADC", AM_IDY, 0x77 }, { "ADC", AM_SR, 0x63 }, { "ADC", AM_SRY, 0x73 },
+    { "AND", AM_ALG, 0x2F }, { "AND", AM_ALX, 0x3F }, { "AND", AM_IDL, 0x27 },
+    { "AND", AM_IDY, 0x37 }, { "AND", AM_SR, 0x23 }, { "AND", AM_SRY, 0x33 },
+    { "BRL", AM_RL16, 0x82 },
+    { "CMP", AM_ALG, 0xCF }, { "CMP", AM_ALX, 0xDF }, { "CMP", AM_IDL, 0xC7 },
+    { "CMP", AM_IDY, 0xD7 }, { "CMP", AM_SR, 0xC3 }, { "CMP", AM_SRY, 0xD3 },
+    { "COP", AM_IMM, 0x02 },
+    { "EOR", AM_ALG, 0x4F }, { "EOR", AM_ALX, 0x5F }, { "EOR", AM_IDL, 0x47 },
+    { "EOR", AM_IDY, 0x57 }, { "EOR", AM_SR, 0x43 }, { "EOR", AM_SRY, 0x53 },
+    { "JML", AM_ALG, 0x5C }, { "JML", AM_IAL, 0xDC },
+    { "JMP", AM_ALG, 0x5C }, { "JMP", AM_IAL, 0xDC },
+    { "JSL", AM_ALG, 0x22 }, { "JSR", AM_IAX, 0xFC },
+    { "LDA", AM_ALG, 0xAF }, { "LDA", AM_ALX, 0xBF }, { "LDA", AM_IDL, 0xA7 },
+    { "LDA", AM_IDY, 0xB7 }, { "LDA", AM_SR, 0xA3 }, { "LDA", AM_SRY, 0xB3 },
+    { "MVN", AM_BLK, 0x54 }, { "MVP", AM_BLK, 0x44 },
+    { "ORA", AM_ALG, 0x0F }, { "ORA", AM_ALX, 0x1F }, { "ORA", AM_IDL, 0x07 },
+    { "ORA", AM_IDY, 0x17 }, { "ORA", AM_SR, 0x03 }, { "ORA", AM_SRY, 0x13 },
+    { "PEA", AM_ABS, 0xF4 },
+    { "PEI", AM_IZP, 0xD4 },
+    { "PER", AM_RL16, 0x62 },
+    { "PHB", AM_IMP, 0x8B }, { "PHD", AM_IMP, 0x0B }, { "PHK", AM_IMP, 0x4B },
+    { "PLB", AM_IMP, 0xAB }, { "PLD", AM_IMP, 0x2B },
+    { "REP", AM_IMM, 0xC2 },
+    { "RTL", AM_IMP, 0x6B },
+    { "SBC", AM_ALG, 0xEF }, { "SBC", AM_ALX, 0xFF }, { "SBC", AM_IDL, 0xE7 },
+    { "SBC", AM_IDY, 0xF7 }, { "SBC", AM_SR, 0xE3 }, { "SBC", AM_SRY, 0xF3 },
+    { "SEP", AM_IMM, 0xE2 },
+    { "STA", AM_ALG, 0x8F }, { "STA", AM_ALX, 0x9F }, { "STA", AM_IDL, 0x87 },
+    { "STA", AM_IDY, 0x97 }, { "STA", AM_SR, 0x83 }, { "STA", AM_SRY, 0x93 },
+    { "TCD", AM_IMP, 0x5B }, { "TCS", AM_IMP, 0x1B }, { "TDC", AM_IMP, 0x7B },
+    { "TSC", AM_IMP, 0x3B }, { "TXY", AM_IMP, 0x9B }, { "TYX", AM_IMP, 0xBB },
+    { "WDM", AM_IMM, 0x42 },
+    { "XBA", AM_IMP, 0xEB }, { "XCE", AM_IMP, 0xFB },
+};
+
+typedef struct {
+    const OpEntry *entries;
+    size_t count;
+} OpTable;
+
+static const OpTable TABLES[] = {
+    { TABLE, TABLE_COUNT(TABLE) },
+    { TABLE_65C02, TABLE_COUNT(TABLE_65C02) },
+    { TABLE_65816, TABLE_COUNT(TABLE_65816) },
+};
+
 bool opcode_known(const char *mnem)
 {
+    size_t t;
     size_t i;
 
-    for (i = 0; i < TABLE_COUNT(TABLE); i++) {
-        if (strcmp(TABLE[i].name, mnem) == 0) {
-            return true;
-        }
-    }
-    for (i = 0; i < TABLE_COUNT(TABLE_65C02); i++) {
-        if (strcmp(TABLE_65C02[i].name, mnem) == 0) {
-            return true;
+    for (t = 0; t < TABLE_COUNT(TABLES); t++) {
+        for (i = 0; i < TABLES[t].count; i++) {
+            if (strcmp(TABLES[t].entries[i].name, mnem) == 0) {
+                return true;
+            }
         }
     }
     return false;
@@ -139,19 +187,19 @@ bool opcode_known(const char *mnem)
 
 bool opcode_lookup(const char *mnem, AddrMode mode, uint8_t *opcode)
 {
+    size_t t;
     size_t i;
 
-    for (i = 0; i < TABLE_COUNT(TABLE); i++) {
-        if (TABLE[i].mode == mode && strcmp(TABLE[i].name, mnem) == 0) {
-            *opcode = TABLE[i].opcode;
-            return true;
-        }
-    }
-    for (i = 0; i < TABLE_COUNT(TABLE_65C02); i++) {
-        if (TABLE_65C02[i].mode == mode && strcmp(TABLE_65C02[i].name, mnem) == 0) {
-            *opcode = TABLE_65C02[i].opcode;
-            return true;
+    for (t = 0; t < TABLE_COUNT(TABLES); t++) {
+        for (i = 0; i < TABLES[t].count; i++) {
+            const OpEntry *e = &TABLES[t].entries[i];
+
+            if (e->mode == mode && strcmp(e->name, mnem) == 0) {
+                *opcode = e->opcode;
+                return true;
+            }
         }
     }
     return false;
 }
+
