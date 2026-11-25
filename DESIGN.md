@@ -54,8 +54,12 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `aacef6a` (docs for Phase 5 stage 2). Phases 0–5
-  (flat and OMF linking, standalone REL) are done.
+- Latest commit on `main`: `823324d` (ENT/EXT docs and open items). Working
+  tree is clean. Phases 0–5 (flat and OMF linking, standalone REL) are done,
+  and `ctest` passes 65/65 on GCC Debug and ASan/UBSan.
+- Next step: the unverified merlin32 comparisons under Open questions. Probe
+  each one black-box, record the result here or in the guide, then tick it off.
+  Ask the user before any behavior change.
 - Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
   Oracle tests need `-DMERLIN32_BIN=/root/merlin32/Source/merlin32
   -DMERLIN32_LIB=/root/merlin32/Library`.
