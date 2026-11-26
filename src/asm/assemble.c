@@ -2003,6 +2003,10 @@ static void name_directive(Asm *a, const SrcLine *ln)
         s++;
     }
     n = strcspn(s, " \t");
+    /* merlin32 drops a trailing .L (any case) here, but not in link files. */
+    if (n > 2 && s[n - 2] == '.' && (s[n - 1] == 'L' || s[n - 1] == 'l')) {
+        n -= 2;
+    }
     if (n == 0 || a->bin->out_name[0] != '\0') {
         return;
     }

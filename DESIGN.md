@@ -54,10 +54,11 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `23e1173` (spec-audit group c, size limits). Uncommitted:
-  bare `ORG` in assembly now matches merlin32 (see "Spec audit" below). Groups
+- Latest commit on `main`: `be2f5b9` (bare `ORG` in assembly matches merlin32;
+  see "Spec audit" below). Uncommitted: the `DSK`/`SAV` trailing `.L` fix (group d,
+  partly done; `PUT` case-insensitivity and REL default names remain). Groups
   (a) to (c) are committed. Phases 0–5 (flat and OMF linking, standalone REL) are
-  done. `ctest` passes 84/84 on GCC Debug.
+  done. `ctest` passes 85/85 on GCC Debug with oracle paths.
 - Next step: no open link questions remain. Pick the next item from Open
   questions or Deferred (disk image creation). Ask the user before any behavior
   change.
@@ -208,7 +209,6 @@ Gaps confirmed, not yet fixed:
 
 - Bare `ORG` (assembly) is now implemented to match merlin32. The first `ORG $x` sets a resume location, each non-DUM object byte advances it, and a bare `ORG` moves the PC there, with its listing row at that location. Later `ORG $x` lines do not move it. Inside `DUM` it is a no-op. Probed against merlin32 with 10 shapes (listings match) plus `tests/oracle/cases/org_bare.s`. An earlier note that it "keeps the current location" was too simple. The link-file bare `ORG` is separate and already matches (`link_cases/bare_org`).
 - `REL` after code, a label, `DS`, `DFB`, or `LDA`: no error in either assembler (probed). The earlier "merlin32 errors" claim was not reproduced and has been dropped.
-- `DSK ABC.L` writes `ABC.L` (merlin32 writes `ABC`).
 - `PUT INC.S` fails when the file is `inc.s` (merlin32 finds it case-insensitively).
 - Link files: `KND`, `ALI`, `LNA`, `XPL`, `AUX` are unknown directives in asm816 (merlin32 accepts `KND`/`ALI`, rejects conflicting `LNA`). `BSZ` and `DS` before `ASM` already match.
 - Error text differs but exit code matches: `ELSE` without `DO`, LUP count over 26, nested LUP, `]9`, `REV` bad string.
@@ -263,6 +263,7 @@ Link-rule probes against merlin32 (black-box; all resolved):
 - [x] Bare `ORG` (no operand): merlin32 sets the origin to `$0000`, even after an earlier `ORG`. asm816 now matches (`link_cases/bare_org`).
 - [x] Output type in no-DSK links: the link-wide rule (last `TYP` applies to every output) matches merlin32 with three modules across seven `TYP` placements, including last-`TYP`-wins and no-`TYP` (OMF, so "DSK is missing").
 - [x] `DSK` after an open segment (`ASM`, no `SNA`, then `DSK`), and after an `ORG` with no `ASM`. merlin32 accepts both and writes every segment. asm816 now matches (`link_cases/dsk_after_open`).
+- [x] `DSK`/`SAV` name suffix. merlin32 drops one trailing `.L` (any case) from an assembly `DSK` or `SAV` name: `ABC.L` gives `ABC`, `AB.L.L` gives `AB.L`, `ABC.S` is kept. Link-file `DSK` keeps `.L` (`DSK OUT.L` gives `OUT.L`). asm816 now matches (`oracle/cases/output_dot_l.s`). Not matched: `DSK .L` alone, which merlin32 writes no file for.
 
 Deferred:
 

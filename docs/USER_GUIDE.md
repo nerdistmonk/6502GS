@@ -49,7 +49,9 @@ Each run writes files into the current directory.
 
 - **Object bytes.** A flat binary named after the source file without its
   extension (`hello.s` gives `hello`). If `SAV` or `DSK` gives a name, that
-  name is used instead. The file has no load-address header. A source with
+  name is used instead, minus a trailing `.L` (`DSK ABC.L` gives `ABC`, as in
+  merlin32). Link-file `DSK` names keep `.L`. The file has no load-address
+  header. A source with
   `REL` writes an OMF v2.1 object file instead, named by `SAV` or `DSK`. Without
   either name it prints an error, writes nothing, and exits 0, as merlin32 does.
 - **`_FileInformation.txt`.** Written on every run. It records the output name
