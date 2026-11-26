@@ -1,0 +1,8 @@
+ TYP $B3
+ DSK LU
+ ASM x.s
+ KND $12
+ ALI PAGE
+ LNA first
+ ASM y.s
+ SNA

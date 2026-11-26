@@ -148,7 +148,10 @@ static int write_omf(const char *name, const Binary *bin)
     seg.body_len = bin->len;
     seg.rel = rel;
     seg.nrel = bin->nfix;
-    seg.name = name;
+    seg.lname = name;
+    seg.sname = name;
+    seg.kind = 0x1000;
+    seg.align = 0;
 
     err = omf_build(&seg, 1, &out, &outlen);
     if (err != NULL) {

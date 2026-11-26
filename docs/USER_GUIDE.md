@@ -242,6 +242,18 @@ Link files use merlin32's commands:
   the same output. This includes modules read before that `ORG`.
 - `SNA` ends the segment. `SNA` needs an earlier `ASM` in the file. A `DSK` may
   follow a segment that has no `SNA`. The earlier segment is still written.
+- `SNA name` sets the OMF segment name (SEGNAME). Names longer than 10 characters
+  are written with a length prefix. Without a name, SEGNAME is blank.
+- `LNA name` sets the OMF load name (LOADNAME, first 10 characters). The name is
+  the rest of the line, so spaces are kept, and one matching pair of `"` or `'`
+  around it is removed. Without a name it is blank.
+- `KND n` sets the OMF KIND word for the module's segment. The low byte must be
+  `$00`, `$01`, `$02`, `$04`, `$08`, `$10`, or `$12`. A bare `KND` gives `$0000`.
+  The default is `$1000`.
+- `ALI NONE|PAGE|BANK` sets the OMF alignment. The default is `NONE`.
+- `LNA`, `SNA`, `KND`, and `ALI` attach to the last `ASM` and need an `ASM` earlier
+  in the file. Repeating `LNA` or `SNA` with the same name (ignoring case) is
+  fine. A different name is an error. Repeating `KND` or `ALI` takes the last value.
 
 ```
  TYP $06

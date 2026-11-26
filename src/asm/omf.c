@@ -3,9 +3,8 @@
 
 #include "omf.h"
 
-#define HDR_LEN 64
+#define HDR_FIXED_LEN 44
 #define BANK_SIZE 0x10000
-#define KIND_CODE 0x1000
 #define BODY_MAX 0xFFFF
 #define NAME_LEN 10
 
@@ -225,12 +224,26 @@ static void emit_reloc_record(Buf *rec, const OmfReloc *r)
     buf_le(rec, (uint32_t)r->total, 2);
 }
 
+/* Copies at most NAME_LEN characters of s and pads the rest with blanks. */
+static void pad_name(const char *s, size_t len, uint8_t out[NAME_LEN])
+{
+    size_t i;
+
+    for (i = 0; i < NAME_LEN; i++) {
+        out[i] = (uint8_t)(i < len ? s[i] : ' ');
+    }
+}
+
 /* Appends one segment: header, LCONST body, relocation records, and END. */
 static const char *append_segment(const OmfSegment *seg, Buf *file)
 {
     Buf rec = { 0 };
     const char *err = NULL;
-    uint8_t name[NAME_LEN];
+    uint8_t lname[NAME_LEN];
+    uint8_t sname[NAME_LEN];
+    size_t sname_len;
+    size_t hdr_len;
+    bool labten;
     size_t body_at;
     size_t i;
 
@@ -273,33 +286,38 @@ static const char *append_segment(const OmfSegment *seg, Buf *file)
         return "out of memory";
     }
 
-    memset(name, ' ', sizeof name);
-    if (seg->name != NULL) {
-        size_t len = strlen(seg->name);
+    sname_len = seg->sname != NULL ? strlen(seg->sname) : 0;
+    labten = sname_len <= NAME_LEN;
+    hdr_len = HDR_FIXED_LEN + NAME_LEN + (labten ? NAME_LEN : 1 + sname_len);
+    pad_name(seg->lname, seg->lname != NULL ? strlen(seg->lname) : 0, lname);
+    pad_name(seg->sname, sname_len, sname);
 
-        memcpy(name, seg->name, len > NAME_LEN ? NAME_LEN : len);
-    }
-
-    buf_le(file, (uint32_t)(HDR_LEN + rec.n), 4);
+    buf_le(file, (uint32_t)(hdr_len + rec.n), 4);
     buf_le(file, 0, 4);
     buf_le(file, (uint32_t)seg->body_len, 4);
     buf_put(file, 0);
-    buf_put(file, 0x0A);
+    buf_put(file, labten ? 0x0A : 0x00);
     buf_put(file, 0x04);
     buf_put(file, 0x02);
     buf_le(file, BANK_SIZE, 4);
-    buf_le(file, KIND_CODE, 2);
+    buf_le(file, seg->kind, 2);
     buf_le(file, 0, 2);
     buf_le(file, 0, 4);
-    buf_le(file, 0, 4);
+    buf_le(file, seg->align, 4);
     buf_put(file, 0);
     buf_put(file, 0);
     buf_le(file, (uint32_t)seg->segnum, 2);
     buf_le(file, 0, 4);
-    buf_le(file, 0x2C, 2);
-    buf_le(file, 0x40, 2);
-    buf_bytes(file, name, NAME_LEN);
-    buf_bytes(file, name, NAME_LEN);
+    buf_le(file, HDR_FIXED_LEN, 2);
+    buf_le(file, (uint32_t)hdr_len, 2);
+    buf_bytes(file, lname, NAME_LEN);
+    if (labten) {
+        buf_bytes(file, sname, NAME_LEN);
+    } else {
+        /* The length byte is the low byte of the name length, as merlin32 writes it. */
+        buf_put(file, (uint8_t)sname_len);
+        buf_bytes(file, (const uint8_t *)seg->sname, sname_len);
+    }
     buf_bytes(file, rec.p, rec.n);
 
     free(rec.p);

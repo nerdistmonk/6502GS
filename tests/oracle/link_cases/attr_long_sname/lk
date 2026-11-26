@@ -1,0 +1,4 @@
+ TYP $B3
+ DSK LU
+ ASM x.s
+ SNA a_long_segment_name

@@ -17,6 +17,8 @@
 #define ORG_MAX 0xFFFFFF
 /* A flat module in a link with no DSK is assembled at this origin. */
 #define NODSK_ORIGIN 0x8000
+/* KIND of a segment with no KND: code, not absolute. */
+#define KIND_DEFAULT 0x1000
 
 typedef struct {
     char *name;
@@ -33,6 +35,13 @@ typedef struct {
 typedef struct {
     char *shown;
     char *path;
+    /* OMF attributes set by KND, ALI, LNA, and SNA. NULL names are blank. */
+    uint16_t kind;
+    uint32_t align;
+    char *lname;
+    char *sname;
+    bool lna_set;
+    bool sna_set;
 } LinkModule;
 
 typedef struct {
@@ -275,6 +284,12 @@ static bool add_module(Link *lk, const SrcLine *ln)
         return false;
     }
     m = &lk->mods[lk->nmods];
+    m->kind = KIND_DEFAULT;
+    m->align = 0;
+    m->lname = NULL;
+    m->sname = NULL;
+    m->lna_set = false;
+    m->sna_set = false;
     m->shown = dup_str(ln->operand);
     m->path = m->shown != NULL ? join_dir(lk->dir, ln->operand) : NULL;
     if (m->shown == NULL || m->path == NULL) {
@@ -291,11 +306,109 @@ static bool add_module(Link *lk, const SrcLine *ln)
     return true;
 }
 
+/* Returns the operand of a directive line as written: spaces inside the name
+ * are kept and a trailing comment is dropped. parse_line stops at a space, so
+ * LNA and SNA read the rest of the line from the raw text. */
+static char *raw_operand(const char *text)
+{
+    const char *p = text;
+    const char *start;
+    const char *end;
+    char quote = 0;
+
+    if (*p != ' ' && *p != '\t' && *p != '\0') {
+        while (*p != '\0' && *p != ' ' && *p != '\t') {
+            p++;
+        }
+    }
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    while (*p != '\0' && *p != ' ' && *p != '\t') {
+        p++;
+    }
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    start = p;
+    for (; *p != '\0' && (quote != 0 || *p != ';'); p++) {
+        if (quote != 0) {
+            if (*p == quote) {
+                quote = 0;
+            }
+        } else if (*p == '"' || *p == '\'') {
+            quote = *p;
+        }
+    }
+    end = p;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
+        end--;
+    }
+    return dup_strn(start, (size_t)(end - start));
+}
+
+/* Removes one pair of matching surrounding quotes. Mismatched quotes stay. */
+static void strip_quotes(char *s)
+{
+    size_t n = strlen(s);
+
+    if (n >= 2 && (s[0] == '"' || s[0] == '\'') && s[n - 1] == s[0]) {
+        memmove(s, s + 1, n - 2);
+        s[n - 2] = '\0';
+    }
+}
+
+/* Sets LNA or SNA on the last module. An identical repeat is ignored and a
+ * different one is an error. */
+static bool set_name(Link *lk, const char *lk_path, int lineno, const char *text, const char *op, bool is_sna)
+{
+    LinkModule *m = &lk->mods[lk->nmods - 1];
+    char **field = is_sna ? &m->sname : &m->lname;
+    bool *set = is_sna ? &m->sna_set : &m->lna_set;
+    char *val = raw_operand(text);
+
+    if (val == NULL) {
+        return link_fail(lk_path, lineno, "out of memory");
+    }
+    strip_quotes(val);
+    if (*set) {
+        bool same = equal_ci(*field != NULL ? *field : "", val);
+
+        free(val);
+        if (same) {
+            return true;
+        }
+        {
+            char msg[ASM_LINE_MAX + 64];
+
+            snprintf(msg, sizeof msg, "Two %s directives found for Segment '%s'", op, m->shown);
+            return link_fail(lk_path, lineno, msg);
+        }
+    }
+    *field = val;
+    *set = true;
+    return true;
+}
+
+/* KIND low bytes merlin32 accepts: $00, $01, $02, $04, $08, $10, $12. */
+static bool valid_kind(uint8_t low)
+{
+    static const uint8_t ok[] = {0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x12};
+    size_t i;
+
+    for (i = 0; i < sizeof ok; i++) {
+        if (low == ok[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Applies one directive to the link state. The normal order is DSK, ORG,
  * one or more ASM, SNA. After an SNA, ORG and ASM continue the previous file,
  * with a warning. ASM may come before the first DSK; those modules are
  * assembled but not written. check_mode decides whether ORG is required. */
-static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcLine *ln, int *state)
+static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcLine *ln, const char *text, int *state)
 {
     const char *op = ln->opcode;
     int32_t v = 0;
@@ -353,7 +466,44 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
         if (!lk->asm_seen) {
             return link_fail(lk_path, lineno, "SNA needs a previous ASM");
         }
+        if (ln->has_operand && !set_name(lk, lk_path, lineno, text, "SNA", true)) {
+            return false;
+        }
         *state = LS_NONE;
+        return true;
+    }
+    if (equal_ci(op, "KND") || equal_ci(op, "ALI") || equal_ci(op, "LNA")) {
+        LinkModule *m;
+
+        if (!lk->asm_seen) {
+            char msg[OPCODE_MAX + 32];
+
+            snprintf(msg, sizeof msg, "%s needs a previous ASM", op);
+            return link_fail(lk_path, lineno, msg);
+        }
+        m = &lk->mods[lk->nmods - 1];
+        if (equal_ci(op, "LNA")) {
+            return set_name(lk, lk_path, lineno, text, "LNA", false);
+        }
+        if (equal_ci(op, "KND")) {
+            if (ln->has_operand && !const_operand(ln->operand, &v)) {
+                return link_fail(lk_path, lineno, "KND needs a constant");
+            }
+            if (!valid_kind((uint8_t)(v & 0xFF))) {
+                return link_fail(lk_path, lineno, "KND needs a valid kind constant");
+            }
+            m->kind = (uint16_t)(v & 0xFFFF);
+            return true;
+        }
+        if (ln->has_operand && equal_ci(ln->operand, "NONE")) {
+            m->align = 0;
+        } else if (ln->has_operand && equal_ci(ln->operand, "PAGE")) {
+            m->align = 1;
+        } else if (ln->has_operand && equal_ci(ln->operand, "BANK")) {
+            m->align = 2;
+        } else {
+            return link_fail(lk_path, lineno, "ALI needs NONE, PAGE or BANK");
+        }
         return true;
     }
     {
@@ -443,7 +593,7 @@ static bool parse_link(const char *lk_path, Link *lk)
         if (!parse_line(lines[i], &ln, &err)) {
             ok = link_fail(lk_path, lineno, err);
         } else if (ln.has_opcode) {
-            ok = link_directive(lk, lk_path, lineno, &ln, &state);
+            ok = link_directive(lk, lk_path, lineno, &ln, lines[i], &state);
         }
     }
     if (ok) {
@@ -874,7 +1024,10 @@ static bool write_omf_link(const Link *lk, const AsmModule *res)
         segs[k].body_len = b->len;
         segs[k].rel = rels[k];
         segs[k].nrel = b->nfix;
-        segs[k].name = NULL;
+        segs[k].lname = lk->mods[k].lname;
+        segs[k].sname = lk->mods[k].sname;
+        segs[k].kind = lk->mods[k].kind;
+        segs[k].align = lk->mods[k].align;
     }
     err = omf_build(segs, lk->nmods, &out, &outlen);
     if (err != NULL) {
@@ -1002,6 +1155,8 @@ static void link_free(Link *lk)
     for (i = 0; i < lk->nmods; i++) {
         free(lk->mods[i].shown);
         free(lk->mods[i].path);
+        free(lk->mods[i].lname);
+        free(lk->mods[i].sname);
     }
     free(lk->segs);
     free(lk->mods);

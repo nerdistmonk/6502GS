@@ -1,0 +1,5 @@
+ TYP $B3
+ DSK LU
+ ASM x.s
+ LNA "hello world"
+ SNA "Seg-2"

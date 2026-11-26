@@ -30,8 +30,15 @@ typedef struct {
     size_t body_len;
     OmfReloc *rel;
     size_t nrel;
-    /* LOADNAME and SEGNAME, up to 10 characters; NULL writes blanks. */
-    const char *name;
+    /* LOADNAME: the first 10 characters are written; NULL writes blanks. */
+    const char *lname;
+    /* SEGNAME: up to 10 characters use LABLEN $0A, longer names use a length
+     * prefix; NULL writes blanks. */
+    const char *sname;
+    /* KIND: the segment type and attributes word. */
+    uint16_t kind;
+    /* ALIGN: 0 NONE, 1 PAGE, 2 BANK. */
+    uint32_t align;
 } OmfSegment;
 
 /* Builds an OMF v2.1 file of the given segments, in order. On success
