@@ -66,7 +66,8 @@ If no `ORG` appears, the program counter starts at `$8000`.
 
 The listing matches merlin32's `-v` format. Each row shows the line number,
 file and line within that file (for included files), line type, MX state,
-relocation column, size, address, object code, and the source text.
+relocation column, size, address, object code, and the source text. Comments
+appear in the source column; a comment-only line is shown as a `Comment` row.
 
 Errors print to stderr as `      => [Error] <text> (line N, file 'F').` The
 assembler stops reporting after the first error.
@@ -111,12 +112,28 @@ Merlin's four-column layout: label, opcode, operand, comment.
 | Group | Directives |
 |---|---|
 | Origin and storage | `ORG`, `EQU`, `DS`, `DFB`/`DB`, `DW`, `DA`, `ADR`, `ADRL`, `DUM`/`DEND`, `END` |
-| Data and text | `HEX`, `ASC`, `DCI`, `STR`, `FLS`, `REV`, `INV`, `KBD` |
+| Data and text | `HEX`, `ASC`, `DCI`, `STR`, `STRL`, `FLS`, `REV`, `INV`, `KBD`, `DDB`, `CHK` |
+| File data | `PUTBIN`, `DAT` |
 | Mode | `MX`, `XC` |
 | Output hints | `SAV`, `DSK`, `TYP` |
 | Linking | `ENT`, `EXT` (see Linking) |
 | Listing | `LST`, `PAG`, `TR`, `EXP` (accepted), `ERR` |
 | Control flow | `DO`, `ELSE`, `FIN`, `LUP`, `--^`, `MAC`, `EOM` / `<<<`, `PUT`, `USE` |
+
+`DDB` stores 16-bit values high byte first. `STRL` writes a 2-byte little-endian
+length, then the text, with no 255-byte limit. `CHK` writes the XOR of every byte
+before it, or 0 at the start of the output. Its listing shows object code `00`,
+as merlin32 does.
+
+`PUTBIN file` includes the file's bytes in the output and lists them as `HEX`
+rows. The file is read from the folder of the main source file.
+
+`DAT n` adds a row with the date or time as text, where `n` is 1 to 8. Selectors
+1 and 5 give `DD-MMM-YY`, 2 and 6 give `MM/DD/YY`, and 3, 4, 7, and 8 add the
+time. The date comes from the clock at startup. Other operands are ignored.
+
+`ANOP`, `START`, `USING`, `AST`, `CYC`, `LSTDO`, `TTL`, `SKP`, `PAU`, `SW`, and
+`USR` are accepted and emit nothing.
 
 `REL` marks the source as a relocatable module. Labels are relative to `$0000`,
 and each address or data field that depends on a label is recorded for the

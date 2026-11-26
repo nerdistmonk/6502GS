@@ -8,6 +8,7 @@
 
 typedef enum {
     LST_CODE,
+    LST_COMMENT,
     LST_DATA,
     LST_DIRECTIVE,
     LST_DUM,
@@ -17,7 +18,8 @@ typedef enum {
     LST_VARIABLE
 } ListType;
 
-/* One displayed listing row. Label, opcode and operand are NULL when absent. */
+/* One displayed listing row. Label, opcode, operand and comment are NULL when
+ * absent. For LST_COMMENT rows, comment holds the whole source line. */
 typedef struct {
     unsigned long line;
     int file;
@@ -30,6 +32,7 @@ typedef struct {
     char *label;
     char *opcode;
     char *operand;
+    char *comment;
 } ListRow;
 
 typedef struct {

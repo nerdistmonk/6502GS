@@ -182,7 +182,38 @@ SEC+XCE MX, `:local` promotion, IF string compare, `IF MX`, macro opcode
 shadowing, left-to-right outside braces, STR over 255 rejected, nested PUT
 ignored, `]9` error, `STX $1234,Y` error.
 
-Not yet audited: link-file `BSZ`, §14.2 limits, and most of §5–§8 and §11–§13.
+Audit of §2, §3.2, §5–§8, §11–§13 (black-box, runtime-probed against merlin32).
+Gaps confirmed, not yet fixed (no behavior change made):
+
+- Macros: stacked `MAC` headers (fall-through) unsupported; `PMC` gives "NOT MACRO"; `>>>` unknown; duplicate macro names (merlin32 warns and uses the last definition) error as "duplicate label".
+- Size limits: `DUM` past `$FFFF` and object code past `$10000` are accepted by asm816 (merlin32 errors).
+- Bare `ORG` is rejected by asm816 (merlin32 restores the global origin). `REL` after a label or code is accepted (merlin32 errors).
+- `DSK ABC.L` writes `ABC.L` (merlin32 writes `ABC`).
+- `PUT INC.S` fails when the file is `inc.s` (merlin32 finds it case-insensitively).
+- Link files: `KND`, `ALI`, `LNA`, `XPL`, `AUX` are unknown directives in asm816 (merlin32 accepts `KND`/`ALI`, rejects conflicting `LNA`). `BSZ` and `DS` before `ASM` already match.
+- Error text differs but exit code matches: `ELSE` without `DO`, LUP count over 26, nested LUP, `]9`, `REV` bad string.
+
+Group (a) fixed (byte-identical to merlin32, listing checked): `DDB` (big-endian),
+`CHK` (XOR of preceding bytes), `STRL` (2-byte length, no 255 limit), `PUTBIN`
+(HEX rows, read from the main source folder), `DAT` 1–8 (synthetic ASC row;
+other operands ignored), and the no-op directives (`ANOP`, `START`, `USING`,
+`AST`, `CYC`, `LSTDO`, `TTL`, `SKP`, `PAU`, `SW`, `USR`) emit nothing.
+Listing parity, now matched byte for byte: CHK's object code shows `00` as in
+merlin32 (the binary keeps the real checksum), and `;` comments are shown in the
+source column. A comment-only line (`;`, `*`, or an indented `;` with no label
+or opcode) is a `Comment` row, printed as one space plus the raw line. A row
+with a comment pads its operand to a width of 15–21: the longest operand among
+commented rows, capped at 21. A comment follows the padded operand directly, so
+an operand of 21 or more characters has no space before `;`. Uncommented rows
+still use the same pad width. Comments inside macro bodies and false
+conditionals are covered by `tests/oracle/cases/comments*.s`.
+`DAT 1 hi` (text after the selector) is ignored by both, but merlin32 lists the
+operand as `1hi`; asm816 lists `1`, and the bytes match. Not in the oracle cases.
+
+Matches confirmed: `DS` fill and negative-value error, `HEX` odd-digit error and comma form, `LUP 0` and `LUP 26`, `END` stops reading, CRLF input, `:local` before global, `DO`/`FIN`, equate chains of 9 and 11, `PUT` without extension, 24-bit `ORG`, `REL` before code, plain macro call, stacked `MAC` with no call.
+
+Not yet probed: §14.2 buffer limits, OMF `_Output.txt` naming, `DAT` time selectors 3, 4, 7, and 8 (clock-dependent, so not in oracle cases), and PUTBIN or DAT inside a macro body at invocation.
+
 
 ## References
 

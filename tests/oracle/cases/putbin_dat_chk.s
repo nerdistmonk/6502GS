@@ -1,0 +1,22 @@
+ ORG $2000
+ ANOP
+ START
+ TTL 'Title'
+ SKP 2
+ USING $1234
+ DDB $1234
+ DDB $ABCD,$0102
+ DFB 1,2,4
+ CHK
+ STRL "AB"
+ STRL 'cd'
+ DAT 1
+ DAT 2
+ DAT 5
+ DAT 6
+ DAT 9
+ DAT 1x
+ PAU
+ PUTBIN payload.bin
+ DAT 1
+ RTS

@@ -51,12 +51,21 @@ static bool take_operand(const char **pp, char *dst, size_t cap)
     return true;
 }
 
+static void note_comment(SrcLine *out, const char *p)
+{
+    if (*p == ';') {
+        out->comment = p;
+    }
+}
+
 bool parse_line(const char *text, SrcLine *out, const char **err)
 {
     const char *p = text;
 
     memset(out, 0, sizeof *out);
     if (*p == '*' || *p == ';') {
+        out->comment = text;
+        out->comment_line = true;
         return true;
     }
     if (*p != ' ' && *p != '\t' && *p != '\0') {
@@ -68,6 +77,12 @@ bool parse_line(const char *text, SrcLine *out, const char **err)
     }
     p = skip_blanks(p);
     if (*p == '\0' || *p == ';') {
+        if (*p == ';' && !out->has_label) {
+            out->comment = text;
+            out->comment_line = true;
+        } else {
+            note_comment(out, p);
+        }
         return true;
     }
     if (!take_word(&p, out->opcode, sizeof out->opcode)) {
@@ -77,6 +92,7 @@ bool parse_line(const char *text, SrcLine *out, const char **err)
     out->has_opcode = true;
     p = skip_blanks(p);
     if (*p == '\0' || *p == ';') {
+        note_comment(out, p);
         return true;
     }
     if (!take_operand(&p, out->operand, sizeof out->operand)) {
@@ -84,5 +100,8 @@ bool parse_line(const char *text, SrcLine *out, const char **err)
         return false;
     }
     out->has_operand = true;
+    p = skip_blanks(p);
+    out->trailing = *p != '\0' && *p != ';';
+    note_comment(out, p);
     return true;
 }

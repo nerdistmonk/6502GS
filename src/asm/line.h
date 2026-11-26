@@ -14,6 +14,12 @@ typedef struct {
     bool has_opcode;
     char operand[ASM_LINE_MAX];
     bool has_operand;
+    /* Non-blank text after the operand that does not start with ';'. */
+    bool trailing;
+    /* Comment text, verbatim from its marker to the end of the line; points
+     * into the parsed text. A whole-line comment starts at column 0. */
+    const char *comment;
+    bool comment_line;
 } SrcLine;
 
 /* Splits one source line into label, opcode, and operand. Text after the

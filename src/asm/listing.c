@@ -19,6 +19,7 @@ static void free_row(ListRow *r)
     free(r->label);
     free(r->opcode);
     free(r->operand);
+    free(r->comment);
 }
 
 void listing_clear(Listing *l)
@@ -114,8 +115,9 @@ bool listing_add_row(Listing *l, const ListRow *row)
     slot->label = row->label ? dup_text(row->label) : NULL;
     slot->opcode = row->opcode ? dup_text(row->opcode) : NULL;
     slot->operand = row->operand ? dup_text(row->operand) : NULL;
+    slot->comment = row->comment ? dup_text(row->comment) : NULL;
     if ((row->label && slot->label == NULL) || (row->opcode && slot->opcode == NULL) ||
-        (row->operand && slot->operand == NULL)) {
+        (row->operand && slot->operand == NULL) || (row->comment && slot->comment == NULL)) {
         free_row(slot);
         l->oom = true;
         return false;
@@ -127,7 +129,7 @@ bool listing_add_row(Listing *l, const ListRow *row)
 static const char *type_name(ListType t)
 {
     static const char *const names[] = {
-        "Code", "Data", "Directive", "Dum", "Empty", "Equivalence", "Macro", "Variable",
+        "Code", "Comment", "Data", "Directive", "Dum", "Empty", "Equivalence", "Macro", "Variable",
     };
 
     return names[t];
@@ -172,7 +174,7 @@ static void put_rule(FILE *out, size_t fwidth)
 }
 
 static void write_row_chunk(FILE *out, const Listing *l, const ListRow *r, size_t fwidth,
-                            int lwidth, int owidth, size_t chunk, size_t size)
+                            int lwidth, int owidth, int pwidth, size_t chunk, size_t size)
 {
     const uint8_t *bytes = l->bytes + r->boff;
     size_t done = chunk * 4;
@@ -203,8 +205,13 @@ static void write_row_chunk(FILE *out, const Listing *l, const ListRow *r, size_
                      (unsigned)(r->pc & 0xFFFF));
         }
         fprintf(out, "%-23s|", obj);
-        fprintf(out, " %-*s%-*s%-15s\n", lwidth, r->label ? r->label : "",
-                owidth, r->opcode ? r->opcode : "", r->operand ? r->operand : "");
+        if (r->type == LST_COMMENT) {
+            fprintf(out, " %s\n", r->comment ? r->comment : "");
+        } else {
+            fprintf(out, " %-*s%-*s%-*s", lwidth, r->label ? r->label : "",
+                    owidth, r->opcode ? r->opcode : "", pwidth, r->operand ? r->operand : "");
+            fprintf(out, "%s\n", r->comment ? r->comment : "");
+        }
     } else {
         fputs("      |", out);
         fprintf(out, "%*s|", (int)fwidth, "");
@@ -224,6 +231,8 @@ void listing_write(FILE *out, const Listing *l)
     size_t i;
     int lwidth;
     int owidth;
+    int pwidth;
+    size_t pmax = 15;
 
     for (i = 1; i < l->nnames; i++) {
         if (l->names[i] != NULL && strlen(l->names[i]) > fwidth) {
@@ -239,9 +248,15 @@ void listing_write(FILE *out, const Listing *l)
         if (r->opcode != NULL && strlen(r->opcode) > omax) {
             omax = strlen(r->opcode);
         }
+        /* Operand column widens only for commented rows, capped at 21. */
+        if (r->comment != NULL && r->type != LST_COMMENT && r->operand != NULL &&
+            strlen(r->operand) > pmax) {
+            pmax = strlen(r->operand) > 21 ? 21 : strlen(r->operand);
+        }
     }
     lwidth = (int)lmax + 2;
     owidth = (int)omax + 2;
+    pwidth = (int)pmax;
     fwidth += 12;
 
     put_rule(out, fwidth);
@@ -254,7 +269,7 @@ void listing_write(FILE *out, const Listing *l)
         size_t c;
 
         for (c = 0; c < chunks; c++) {
-            write_row_chunk(out, l, r, fwidth, lwidth, owidth, c, r->nbytes);
+            write_row_chunk(out, l, r, fwidth, lwidth, owidth, pwidth, c, r->nbytes);
         }
     }
     put_rule(out, fwidth);

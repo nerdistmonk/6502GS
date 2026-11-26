@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "line.h"
 #include "listing.h"
@@ -190,6 +191,7 @@ typedef struct {
     LineOrigin cur_org;
     unsigned long lst_seq;
     int nfiles;
+    time_t started;
     enum lst_vis lst_vis;
     ListType lst_type;
     SrcLine lst_ln;
@@ -1070,7 +1072,7 @@ static int reloc_shift(char mod)
     return 0;
 }
 
-static void data_directive(Asm *a, const SrcLine *ln, int width)
+static void data_directive(Asm *a, const SrcLine *ln, int width, bool big)
 {
     char item[ASM_LINE_MAX];
     const char *p = ln->operand;
@@ -1127,7 +1129,15 @@ static void data_directive(Asm *a, const SrcLine *ln, int width)
             }
             bytes[0] = (uint8_t)(v & 0xFF);
             bytes[1] = (uint8_t)((v >> 8) & 0xFF);
-            if (!record_fixup(a, a->bin->len, &ev, 2, shift)) {
+            if (big) {
+                uint8_t t = bytes[0];
+
+                bytes[0] = bytes[1];
+                bytes[1] = t;
+                if (!record_fixup(a, a->bin->len, &ev, 1, -8) || !record_fixup(a, a->bin->len + 1, &ev, 1, 0)) {
+                    return;
+                }
+            } else if (!record_fixup(a, a->bin->len, &ev, 2, shift)) {
                 return;
             }
             emit(a, bytes, 2);
@@ -1197,7 +1207,23 @@ static void hex_directive(Asm *a, const SrcLine *ln)
     emit_hex(a, ln->operand);
 }
 
-enum text_kind { TEXT_ASC, TEXT_DCI, TEXT_STR, TEXT_INV, TEXT_FLS, TEXT_REV };
+/* CHK emits the exclusive OR of every byte assembled so far. */
+static void chk_directive(Asm *a)
+{
+    uint8_t sum = 0;
+    size_t i;
+
+    if (a->pass == 2 && !a->dummy && a->bin != NULL) {
+        for (i = 0; i < a->bin->len; i++) {
+            sum ^= a->bin->bytes[i];
+        }
+    }
+    /* merlin32 lists CHK's object code as 00; the binary keeps the checksum. */
+    a->lst_zero = true;
+    emit(a, &sum, 1);
+}
+
+enum text_kind { TEXT_ASC, TEXT_DCI, TEXT_STR, TEXT_STRL, TEXT_INV, TEXT_FLS, TEXT_REV };
 
 /* Shared by ASC, DCI, STR, INV, FLS, and REV. A '"' delimiter sets the high
  * bit of each character and a '\'' delimiter clears it. An optional hex
@@ -1303,6 +1329,14 @@ static void text_directive(Asm *a, const SrcLine *ln, enum text_kind kind)
             emit(a, &count, 1);
         }
         break;
+    case TEXT_STRL: {
+        uint8_t count[2];
+
+        count[0] = (uint8_t)(n & 0xFF);
+        count[1] = (uint8_t)((n >> 8) & 0xFF);
+        emit(a, count, 2);
+        break;
+    }
     default:
         break;
     }
@@ -2160,6 +2194,23 @@ static void collect_links(Asm *a)
     }
 }
 
+/* merlin32 accepts these and ignores them, including any operand. The DAT
+ * row itself is listed as a directive; its synthetic ASC line does the work. */
+static bool noop_directive(const char *name)
+{
+    static const char *const names[] = {
+        "ANOP", "START", "USING", "AST", "CYC", "LSTDO", "TTL", "SKP", "PAU", "SW", "USR", "DAT",
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof names / sizeof names[0]; i++) {
+        if (strcmp(name, names[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
 {
     a->ctx = directive_ctx(name);
@@ -2168,9 +2219,13 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
     } else if (strcmp(name, "DS") == 0) {
         ds_directive(a, ln);
     } else if (strcmp(name, "DFB") == 0 || strcmp(name, "DB") == 0) {
-        data_directive(a, ln, 1);
+        data_directive(a, ln, 1, false);
     } else if (strcmp(name, "DW") == 0 || strcmp(name, "DA") == 0) {
-        data_directive(a, ln, 2);
+        data_directive(a, ln, 2, false);
+    } else if (strcmp(name, "DDB") == 0) {
+        data_directive(a, ln, 2, true);
+    } else if (strcmp(name, "CHK") == 0) {
+        chk_directive(a);
     } else if (strcmp(name, "HEX") == 0) {
         hex_directive(a, ln);
     } else if (strcmp(name, "ASC") == 0) {
@@ -2179,6 +2234,8 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         text_directive(a, ln, TEXT_DCI);
     } else if (strcmp(name, "STR") == 0) {
         text_directive(a, ln, TEXT_STR);
+    } else if (strcmp(name, "STRL") == 0) {
+        text_directive(a, ln, TEXT_STRL);
     } else if (strcmp(name, "INV") == 0) {
         text_directive(a, ln, TEXT_INV);
     } else if (strcmp(name, "FLS") == 0) {
@@ -2186,9 +2243,9 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
     } else if (strcmp(name, "REV") == 0) {
         text_directive(a, ln, TEXT_REV);
     } else if (strcmp(name, "ADR") == 0) {
-        data_directive(a, ln, 3);
+        data_directive(a, ln, 3, false);
     } else if (strcmp(name, "ADRL") == 0) {
-        data_directive(a, ln, 4);
+        data_directive(a, ln, 4, false);
     } else if (strcmp(name, "DUM") == 0) {
         dum_directive(a, ln);
     } else if (strcmp(name, "DEND") == 0) {
@@ -2204,6 +2261,8 @@ static void pseudo_op(Asm *a, const char *name, const SrcLine *ln)
         /* Listing controls. They change only merlin32's listing, not the binary. */
     } else if (strcmp(name, "XC") == 0) {
         /* merlin32 accepts XC and does not enforce 65C02 opcodes without it. */
+    } else if (noop_directive(name)) {
+        /* Accepted with no effect; see noop_directive. */
     } else if (strcmp(name, "ERR") == 0) {
         err_directive(a, ln);
     } else if (strcmp(name, "SAV") == 0 || strcmp(name, "DSK") == 0) {
@@ -2262,13 +2321,16 @@ static bool listing_control(const char *name)
 static bool directive_known(const char *name)
 {
     static const char *const names[] = {
-        "ORG", "DS", "DFB", "DB", "DW", "DA", "HEX", "ASC", "DCI", "STR", "INV", "FLS", "REV",
+        "ORG", "DS", "DFB", "DB", "DW", "DA", "DDB", "CHK", "HEX", "ASC", "DCI", "STR", "STRL", "INV", "FLS", "REV",
         "ADR", "ADRL", "DUM", "DEND", "END", "MX", "LONGA", "LONGI", "LST", "PAG", "TR", "EXP",
         "ERR", "XC", "SAV", "DSK", "TYP", "EQU", "=", "KBD", "EXT", "ENT", "REL",
         "DO", "IF", "ELSE", "FIN",
     };
     size_t i;
 
+    if (noop_directive(name)) {
+        return true;
+    }
     for (i = 0; i < sizeof names / sizeof names[0]; i++) {
         if (strcmp(name, names[i]) == 0) {
             return true;
@@ -2661,7 +2723,163 @@ static bool include_file(Asm *a, const char *operand, bool use, Source *out)
     return ok;
 }
 
-/* Appends the lines of one file. A PUT or USE line outside a MAC body is kept
+/* Formats one DAT selector (1..8) from the clock captured at startup. */
+static void dat_format(time_t started, int sel, char *out, size_t sz)
+{
+    static const char *const months[] = {
+        "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+    };
+    const struct tm *t = localtime(&started);
+    int year;
+    int hour;
+    const char *meridiem;
+
+    if (t == NULL) {
+        out[0] = '\0';
+        return;
+    }
+    year = t->tm_year + 1900 - 2000;
+    hour = t->tm_hour > 12 ? t->tm_hour - 12 : t->tm_hour;
+    meridiem = t->tm_hour > 12 ? "PM" : "AM";
+    switch (sel) {
+    case 1:
+    case 5:
+        snprintf(out, sz, "%02d-%s-%02d", t->tm_mday, months[t->tm_mon], year);
+        break;
+    case 2:
+    case 6:
+        snprintf(out, sz, "%02d/%02d/%02d", t->tm_mon + 1, t->tm_mday, year);
+        break;
+    case 3:
+    case 7:
+        snprintf(out, sz, "%02d-%s-%02d  %2d:%02d:%02d %s", t->tm_mday, months[t->tm_mon], year,
+                 hour, t->tm_min, t->tm_sec, meridiem);
+        break;
+    default:
+        snprintf(out, sz, "%02d/%02d/%02d  %2d:%02d:%02d %s", t->tm_mon + 1, t->tm_mday, year,
+                 hour, t->tm_min, t->tm_sec, meridiem);
+        break;
+    }
+}
+
+/* DAT with a selector of 1..8 adds a synthetic ASC row after itself. Other
+ * operands, and any text after the selector that is not a ';' comment, are
+ * ignored, as merlin32 does. */
+static bool dat_row(Asm *a, const SrcLine *ln, LineOrigin org, Source *out)
+{
+    char body[48];
+    char text[ASM_LINE_MAX];
+    int sel;
+    char quote;
+
+    if (!ln->has_operand || ln->trailing || ln->operand[0] < '1' || ln->operand[0] > '8'
+        || ln->operand[1] != '\0') {
+        return true;
+    }
+    sel = ln->operand[0] - '0';
+    dat_format(a->started, sel, body, sizeof body);
+    quote = sel <= 4 ? '"' : '\'';
+    snprintf(text, sizeof text, " ASC  %c%s%c", quote, body, quote);
+    return source_add(out, text, org);
+}
+
+static bool read_all(FILE *f, uint8_t **data, size_t *len)
+{
+    size_t cap = 0;
+
+    *data = NULL;
+    *len = 0;
+    for (;;) {
+        uint8_t chunk[4096];
+        size_t n = fread(chunk, 1, sizeof chunk, f);
+        uint8_t *grown;
+
+        if (n == 0) {
+            break;
+        }
+        if (*len + n > cap) {
+            size_t ncap = cap ? cap : 4096;
+
+            while (ncap < *len + n) {
+                ncap *= 2;
+            }
+            grown = realloc(*data, ncap);
+            if (grown == NULL) {
+                free(*data);
+                *data = NULL;
+                return false;
+            }
+            *data = grown;
+            cap = ncap;
+        }
+        memcpy(*data + *len, chunk, n);
+        *len += n;
+    }
+    return !ferror(f);
+}
+
+/* PUTBIN lists the file's bytes as HEX rows of 16 bytes under a file index of
+ * their own, then an empty row, as merlin32 does. The file is read from the
+ * folder of the main source. */
+static bool putbin_rows(Asm *a, const char *operand, Source *out)
+{
+    char dir[INCLUDE_PATH_MAX];
+    char path[INCLUDE_PATH_MAX];
+    uint8_t *data = NULL;
+    size_t len = 0;
+    size_t i;
+    int file;
+    FILE *f = NULL;
+    LineOrigin org;
+    bool ok = true;
+
+    if (operand[0] == '\0') {
+        return true;
+    }
+    if (dir_of(a->path, dir, sizeof dir) && snprintf(path, sizeof path, "%s/%s", dir, operand) < (int)sizeof path) {
+        f = fopen(path, "rb");
+    }
+    if (f == NULL) {
+        record(a, RANK_OPEN, "Impossible to open Binary file '%s'.", operand);
+        return true;
+    }
+    ok = read_all(f, &data, &len);
+    fclose(f);
+    if (!ok) {
+        free(data);
+        return false;
+    }
+    file = ++a->nfiles;
+    listing_set_name(&a->lst, file, operand);
+    for (i = 0; i < len; i += 16) {
+        char text[ASM_LINE_MAX];
+        size_t j;
+        size_t n = len - i < 16 ? len - i : 16;
+        int pos;
+
+        pos = snprintf(text, sizeof text, " HEX  ");
+        for (j = 0; j < n; j++) {
+            pos += snprintf(text + pos, sizeof text - (size_t)pos, "%s%02X", j ? "," : "", data[i + j]);
+        }
+        org.file = file;
+        org.fline = (int)(i / 16) + 1;
+        org.silent = false;
+        if (!source_add(out, text, org)) {
+            ok = false;
+            break;
+        }
+    }
+    if (ok) {
+        org.file = file;
+        org.fline = (int)((len + 15) / 16) + 1;
+        org.silent = false;
+        ok = source_add(out, "", org);
+    }
+    free(data);
+    return ok;
+}
+
+/* Appends the lines of one file. A PUT, USE, or PUTBIN line outside a MAC body is kept
  * as a no-op directive row. When expand is set (the main source), the file it
  * names is spliced in right after that line, so included lines take part in
  * macros, LUP, and conditionals as if written in place. Included files keep
@@ -2687,14 +2905,18 @@ static bool splice_lines(Asm *a, char **lines, size_t nlines, bool ends_nl, int 
         if (expand) {
             a->line_no = (int)(i + 1);
         }
-        if (has_op && (word_is(ln.opcode, "PUT") || word_is(ln.opcode, "USE"))) {
+        if (has_op && (word_is(ln.opcode, "PUT") || word_is(ln.opcode, "USE") || word_is(ln.opcode, "PUTBIN"))) {
             if (macro_only) {
                 continue;
             }
             if (!in_mac && !source_add(out, lines[i], org)) {
                 return false;
             }
-            if (expand && !include_file(a, ln.has_operand ? ln.operand : "", word_is(ln.opcode, "USE"), out)) {
+            if (word_is(ln.opcode, "PUTBIN")) {
+                if (expand && !in_mac && !putbin_rows(a, ln.has_operand ? ln.operand : "", out)) {
+                    return false;
+                }
+            } else if (expand && !include_file(a, ln.has_operand ? ln.operand : "", word_is(ln.opcode, "USE"), out)) {
                 return false;
             }
             continue;
@@ -2708,6 +2930,9 @@ static bool splice_lines(Asm *a, char **lines, size_t nlines, bool ends_nl, int 
             continue;
         }
         if (!source_add(out, lines[i], org)) {
+            return false;
+        }
+        if (has_op && !in_mac && word_is(ln.opcode, "DAT") && !dat_row(a, &ln, org, out)) {
             return false;
         }
     }
@@ -3213,7 +3438,7 @@ static void lup_label(Asm *a, SrcLine *ln)
 static bool data_op(const char *name)
 {
     static const char *const ops[] = {"DFB", "DB", "DA", "DW", "ADR", "ADRL", "DS", "ASC",
-                                      "DCI", "STR", "FLS", "HEX", "INV", "REV"};
+                                      "DCI", "STR", "STRL", "DDB", "CHK", "FLS", "HEX", "INV", "REV"};
     size_t i;
 
     for (i = 0; i < sizeof ops / sizeof ops[0]; i++) {
@@ -3358,6 +3583,7 @@ static void list_operand(Asm *a, const ListRow *row, const char *op, Buf *out)
             empty.label = name;
             empty.opcode = NULL;
             empty.operand = NULL;
+            empty.comment = NULL;
             empty.nbytes = 0;
             if (!listing_add_row(&a->lst, &empty)) {
                 fprintf(stderr, "out of memory\n");
@@ -3441,6 +3667,7 @@ static void assemble_line(Asm *a, const char *text, LineOrigin org)
     row.boff = mark;
     row.nbytes = a->lst.nbytes - mark;
     row.label = NULL;
+    row.comment = (char *)a->lst_ln.comment;
     if (a->lst_ln.has_label) {
         if (a->lst_ln.label[0] == ':') {
             snprintf(label_text, sizeof label_text, "_%s", a->lst_ln.label + 1);
@@ -3502,7 +3729,7 @@ static void assemble_statement(Asm *a, const char *text)
     a->lst_ln = ln;
     if (!ln.has_opcode) {
         a->lst_vis = (a->lup_skip || !cond_active(a)) ? LV_SKIP : LV_SHOW;
-        a->lst_type = LST_EMPTY;
+        a->lst_type = ln.comment_line ? LST_COMMENT : LST_EMPTY;
         if (ln.has_label && cond_active(a)) {
             define_label(a, ln.label, a->pc, true, false);
         }
@@ -3549,8 +3776,8 @@ static void assemble_statement(Asm *a, const char *text)
                 define_label(a, ln.label, a->pc, true, false);
             }
             conditional_op(a, name, &ln);
-        } else if (strcmp(name, "PUT") == 0 || strcmp(name, "USE") == 0) {
-            /* The named file's lines follow this row; nothing is assembled here. */
+        } else if (strcmp(name, "PUT") == 0 || strcmp(name, "USE") == 0 || strcmp(name, "PUTBIN") == 0) {
+            /* The named file's lines (or PUTBIN's HEX rows) follow this row; nothing is assembled here. */
             a->lst_type = LST_DIRECTIVE;
             if (cond_active(a)) {
                 a->lst_vis = a->nframes == 1 ? LV_SHOW : LV_HIDE;
@@ -3877,6 +4104,7 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
     bool pass2_started;
 
     memset(&a, 0, sizeof a);
+    a.started = time(NULL);
     out->bytes = NULL;
     out->len = 0;
     out->cap = 0;
@@ -3942,6 +4170,7 @@ bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, 
     bool ok;
 
     memset(&a, 0, sizeof a);
+    a.started = time(NULL);
     memset(out, 0, sizeof *out);
     a.path = path;
     a.macro_dir = macro_dir;
