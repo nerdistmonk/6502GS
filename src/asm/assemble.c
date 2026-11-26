@@ -207,6 +207,9 @@ typedef struct {
     int32_t dummy_pc;
     /* pc at the most recent non-DUM ORG (or the start), for the 64 KB object-size check. */
     int32_t seg_base;
+    /* Where a bare ORG resumes: set by the first non-DUM ORG, then advanced by each non-DUM object byte. */
+    int32_t org_loc;
+    bool org_seen;
     /* Assembling flag, and for each open DO/IF the flag it saved. */
     bool cond_on;
     bool *conds;
@@ -878,6 +881,9 @@ static void emit(Asm *a, const uint8_t *bytes, int n)
             listing_put_byte(&a->lst, a->lst_zero ? 0 : bytes[i]);
         }
         a->pc++;
+        if (!a->dummy) {
+            a->org_loc++;
+        }
     }
 }
 
@@ -965,18 +971,22 @@ static bool next_item(const char **p, char *buf, size_t cap)
 
 static void org_directive(Asm *a, const SrcLine *ln)
 {
-    int32_t v = 0;
+    int32_t v = a->org_loc;
     bool defined = false;
 
-    if (!ln->has_operand) {
-        diag(a, "ORG needs an address");
-        return;
-    }
-    if (!eval_operand(a, ln->operand, &v, &defined)) {
-        return;
-    }
-    if (v < 0 || v > 0xFFFFFF) {
-        diag(a, "ORG address out of range");
+    if (ln->has_operand) {
+        if (!eval_operand(a, ln->operand, &v, &defined)) {
+            return;
+        }
+        if (v < 0 || v > 0xFFFFFF) {
+            diag(a, "ORG address out of range");
+            return;
+        }
+        if (!a->org_seen && !a->dummy) {
+            a->org_loc = v;
+            a->org_seen = true;
+        }
+    } else if (a->dummy) {
         return;
     }
     a->pc = v;
@@ -3735,9 +3745,13 @@ static void assemble_line(Asm *a, const char *text, LineOrigin org)
         row.type = LST_DUM;
     }
     row.pc = (!dum0 && a->dummy) ? a->pc : pc0;
-    if (a->dummy && a->lst_ln.has_opcode && word_is(a->lst_ln.opcode, "ORG")) {
+    if (a->dummy && a->lst_ln.has_opcode && a->lst_ln.has_operand && word_is(a->lst_ln.opcode, "ORG")) {
         /* merlin32 lists an ORG inside DUM at $FFFF. */
         row.pc = 0xFFFF;
+    }
+    if (!a->dummy && a->lst_ln.has_opcode && !a->lst_ln.has_operand && word_is(a->lst_ln.opcode, "ORG")) {
+        /* merlin32 lists a bare ORG at the location it resumes. */
+        row.pc = a->pc;
     }
     if (mx_unknown) {
         strcpy(row.mx, "??");
@@ -3950,6 +3964,8 @@ static bool run_pass(Asm *a, int pass)
     /* A standalone REL module is laid out from 0. bin->rel is set by an earlier run once REL is seen. */
     a->pc = (a->force_rel || (!a->linked && a->bin->rel)) ? 0 : a->start_pc;
     a->seg_base = a->pc;
+    a->org_loc = a->pc;
+    a->org_seen = false;
     a->scope[0] = '\0';
     a->ended = false;
     a->acc16 = false;

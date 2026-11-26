@@ -54,11 +54,10 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `7ccc7cb` (macro behavior). Uncommitted: spec-audit
-  group (c), size limits (64 KB rule, `DS`/`DUM` wording), with the bare `ORG`
-  and `REL` notes corrected; see "Spec audit" below. Groups (a) and (b) are
-  committed. Phases 0–5 (flat and OMF linking, standalone REL) are done.
-  `ctest` passes 83/83 on GCC Debug.
+- Latest commit on `main`: `23e1173` (spec-audit group c, size limits). Uncommitted:
+  bare `ORG` in assembly now matches merlin32 (see "Spec audit" below). Groups
+  (a) to (c) are committed. Phases 0–5 (flat and OMF linking, standalone REL) are
+  done. `ctest` passes 84/84 on GCC Debug.
 - Next step: no open link questions remain. Pick the next item from Open
   questions or Deferred (disk image creation). Ask the user before any behavior
   change.
@@ -207,7 +206,7 @@ simple address or total-size rule matches all probes, and the cause was not iden
 
 Gaps confirmed, not yet fixed:
 
-- Bare `ORG` (assembly, not linking) is rejected by asm816 with "ORG needs an address". merlin32 accepts it and keeps the current location: `ORG $1000 / NOP / ORG $2000 / NOP / ORG / NOP` puts the third NOP at `$1002`. The earlier note that merlin32 restores the global origin was wrong. The link-file bare `ORG` is separate and already matches (`link_cases/bare_org`).
+- Bare `ORG` (assembly) is now implemented to match merlin32. The first `ORG $x` sets a resume location, each non-DUM object byte advances it, and a bare `ORG` moves the PC there, with its listing row at that location. Later `ORG $x` lines do not move it. Inside `DUM` it is a no-op. Probed against merlin32 with 10 shapes (listings match) plus `tests/oracle/cases/org_bare.s`. An earlier note that it "keeps the current location" was too simple. The link-file bare `ORG` is separate and already matches (`link_cases/bare_org`).
 - `REL` after code, a label, `DS`, `DFB`, or `LDA`: no error in either assembler (probed). The earlier "merlin32 errors" claim was not reproduced and has been dropped.
 - `DSK ABC.L` writes `ABC.L` (merlin32 writes `ABC`).
 - `PUT INC.S` fails when the file is `inc.s` (merlin32 finds it case-insensitively).

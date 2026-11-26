@@ -62,6 +62,10 @@ Each run writes files into the current directory.
 
 If no `ORG` appears, the program counter starts at `$8000`.
 
+A bare `ORG` (no operand) resumes at the location it tracks: the first `ORG $x`
+sets it, and each object byte after that advances it, so later `ORG $x` lines
+do not move it. Inside `DUM`, a bare `ORG` does nothing. This matches merlin32.
+
 ## Listing
 
 The listing matches merlin32's `-v` format. Each row shows the line number,
@@ -306,9 +310,6 @@ asm816 matches merlin32 for the behaviors above. Known differences:
   merlin32 accepts, such as `DS $FFFF` followed by NOPs from `ORG $0`, or
   `DS $10000` alone at `ORG $0`. No simple address rule matches merlin32 on
   these cases, so asm816 errs toward rejecting.
-- **Bare `ORG` in assembly.** asm816 rejects a bare `ORG` with "ORG needs an
-  address". merlin32 accepts it and keeps the current location. (In link files
-  a bare `ORG` sets `$0000`, as described above.)
 - **Multiple errors.** merlin32 can print several errors in one run. asm816
   prints the first one, so a pair such as an unknown line plus a missing `FIN`
   reports only one.
