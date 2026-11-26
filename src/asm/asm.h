@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "listing.h"
 
 #define ASM_LINE_MAX 1024
 #define ASM_NAME_MAX 63
@@ -128,22 +129,27 @@ typedef struct {
 
 /* One source file of a link. The bytes, exports, and imports are kept even
  * when assembly reports errors, so a link can size its modules before the
- * final pass. The caller releases it with module_free. */
+ * final pass. The listing is filled only when the module is assembled with
+ * listing set. The caller releases it with module_free. */
 typedef struct {
     Binary bin;
     AsmName *exports;
     size_t nexports;
     AsmName *imports;
     size_t nimports;
+    Listing lst;
+    /* Phase A ozunid count after this module; the next module continues from it. */
+    int ozunid_end;
 } AsmModule;
 
 /* Assembles one link module that starts at start_pc. With force_rel (OMF
  * links) the module is REL from the start and lays out from 0. EXT names take
  * their values from globals, and an EXT name with no global is an error when
- * used. Errors print to stderr only when print_errors is true. */
+ * used. Errors print to stderr only when print_errors is true. With listing
+ * set, the module keeps the listing rows for its _Output.txt. */
 bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc,
     bool force_rel, const AsmName *globals, size_t nglobals, bool print_errors,
-    AsmModule *out);
+    bool listing, int ozunid_start, AsmModule *out);
 void module_free(AsmModule *m);
 
 #endif

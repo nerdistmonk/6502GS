@@ -126,10 +126,24 @@ bool listing_add_row(Listing *l, const ListRow *row)
     return true;
 }
 
+bool listing_insert_row(Listing *l, size_t at, const ListRow *row)
+{
+    ListRow moved;
+
+    if (!listing_add_row(l, row)) {
+        return false;
+    }
+    moved = l->rows[l->nrows - 1];
+    memmove(&l->rows[at + 1], &l->rows[at], (l->nrows - 1 - at) * sizeof *l->rows);
+    l->rows[at] = moved;
+    return true;
+}
+
 static const char *type_name(ListType t)
 {
     static const char *const names[] = {
-        "Code", "Comment", "Data", "Directive", "Dum", "Empty", "Equivalence", "Macro", "Variable",
+        "Code", "Comment", "Data", "Directive", "Dum", "Empty", "Equivalence", "External", "Global",
+        "Macro", "Variable",
     };
 
     return names[t];
@@ -195,7 +209,7 @@ static void write_row_chunk(FILE *out, const Listing *l, const ListRow *r, size_
         fprintf(out, "%3d %*s %6d |", r->file, (int)fwidth - 12, name, r->fline);
         fprintf(out, " %-11s |", type_name(r->type));
         fprintf(out, " %-2s |", r->mx);
-        fputs("         |", out);
+        fprintf(out, "%-9s|", r->reloc);
         fprintf(out, " %4lu |", (unsigned long)size);
         if (size > 0 || r->type == LST_DATA) {
             snprintf(obj, sizeof obj, " %02X/%04X : %-11s ", (unsigned)((r->pc >> 16) & 0xFF),

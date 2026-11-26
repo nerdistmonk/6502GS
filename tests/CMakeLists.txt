@@ -38,5 +38,8 @@ if(MERLIN32_BIN)
         add_test(NAME oracle_link_${case_name}
             COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_link.sh
                 $<TARGET_FILE:asm816> ${MERLIN32_BIN} ${MERLIN32_LIB} ${case_dir})
+        add_test(NAME oracle_link_${case_name}_listing
+            COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/oracle/run_link.sh
+                $<TARGET_FILE:asm816> ${MERLIN32_BIN} ${MERLIN32_LIB} ${case_dir} -v)
     endforeach()
 endif()

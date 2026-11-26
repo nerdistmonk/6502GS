@@ -1,0 +1,8 @@
+E EQU 5
+Z NOP
+L NOP
+ LDA E
+ LDA Z
+ LDA L
+ LDA *
+ RTS

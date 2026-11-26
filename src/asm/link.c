@@ -68,6 +68,8 @@ typedef struct {
     /* Low 16 bits of the last AUX, used as AuxType for every
      * _FileInformation.txt entry. */
     uint16_t aux;
+    /* Keep each module's listing rows for its _Output.txt file (-v). */
+    bool listing;
 } Link;
 
 enum { LS_NONE, LS_DSK, LS_ORG, LS_ASM };
@@ -706,11 +708,12 @@ static bool check_sources(const Link *lk)
 /* Assembles one module at start. A link with no DSK has no output file to
  * place it in, so the start is NODSK_ORIGIN for those modules. */
 static bool assemble_one(const Link *lk, size_t k, int32_t start, const char *macro_dir,
-    const AsmName *globals, size_t nglobals, bool print, AsmModule *res)
+    const AsmName *globals, size_t nglobals, bool print, int *ozcarry, AsmModule *res)
 {
-    if (!assemble_module(lk->mods[k].path, macro_dir, start, lk->omf, globals, nglobals, print, &res[k])) {
+    if (!assemble_module(lk->mods[k].path, macro_dir, start, lk->omf, globals, nglobals, print, lk->listing, *ozcarry, &res[k])) {
         return false;
     }
+    *ozcarry = res[k].ozunid_end;
     if (print && (start & 0xFFFF) + (int32_t)res[k].bin.len > 0x10000) {
         fprintf(stderr, "     => Error : Object code size > 64 KB (file '%s').\n", lk->mods[k].shown);
         return false;
@@ -724,9 +727,10 @@ static bool assemble_all(const Link *lk, const char *macro_dir, const AsmName *g
     size_t s;
     size_t k;
     int32_t pre_start = lk->nsegs == 0 ? NODSK_ORIGIN : 0;
+    int ozcarry = 0;
 
     for (k = 0; k < lk->npre; k++) {
-        if (!assemble_one(lk, k, pre_start, macro_dir, globals, nglobals, print, res)) {
+        if (!assemble_one(lk, k, pre_start, macro_dir, globals, nglobals, print, &ozcarry, res)) {
             return false;
         }
     }
@@ -738,7 +742,7 @@ static bool assemble_all(const Link *lk, const char *macro_dir, const AsmName *g
             /* Each OMF module is its own segment, laid out from 0. */
             int32_t start = lk->omf ? 0 : seg->org + emitted;
 
-            if (!assemble_one(lk, k, start, macro_dir, globals, nglobals, print, res)) {
+            if (!assemble_one(lk, k, start, macro_dir, globals, nglobals, print, &ozcarry, res)) {
                 return false;
             }
             emitted += (int32_t)res[k].bin.len;
@@ -1267,7 +1271,114 @@ bool is_link_file(const char *path)
     return found;
 }
 
-int link_run(const char *path, const char *macro_dir)
+/* Returns the index of the segment that holds module k. */
+static size_t segment_of(const Link *lk, size_t k)
+{
+    size_t s;
+
+    for (s = 0; s < lk->nsegs; s++) {
+        if (k >= lk->segs[s].first && k < lk->segs[s].first + lk->segs[s].count) {
+            return s;
+        }
+    }
+    return 0;
+}
+
+/* Builds "<a>_S<nn>_<b>_Output.txt", or "<a>_S<nn>_Output.txt" without b. */
+static char *segment_listing_name(const char *a, size_t index, const char *b, bool has_b)
+{
+    size_t cap = strlen(a) + strlen(b) + 32;
+    char *s = malloc(cap);
+
+    if (s != NULL) {
+        if (has_b) {
+            snprintf(s, cap, "%s_S%02zu_%s_Output.txt", a, index, b);
+        } else {
+            snprintf(s, cap, "%s_S%02zu_Output.txt", a, index);
+        }
+    }
+    return s;
+}
+
+/* Names module k's listing the way merlin32 does. A single module has no S
+ * number. With no DSK the name is the module's SNA name, or its file name
+ * when there is none. With a DSK the name uses that DSK and the module's
+ * position in link order. An OMF object name is always blank. An OMF
+ * ExpressLoad takes segment 1, so it shifts the modules by one. */
+static char *listing_name(const Link *lk, size_t k)
+{
+    const LinkModule *m = &lk->mods[k];
+    bool named = m->sname != NULL && m->sname[0] != '\0';
+    char *name = NULL;
+    size_t cap;
+
+    if (lk->nsegs == 0) {
+        char *base = module_out_name(m->shown);
+
+        if (base == NULL) {
+            return NULL;
+        }
+        if (lk->nmods == 1) {
+            cap = strlen(base) + 16;
+            name = malloc(cap);
+            if (name != NULL) {
+                snprintf(name, cap, "%s_Output.txt", base);
+            }
+        } else {
+            name = segment_listing_name(named ? m->sname : base, k + 1, "", false);
+        }
+        free(base);
+        return name;
+    }
+    if (lk->nmods == 1) {
+        return dup_str("_Output.txt");
+    }
+    if (lk->omf) {
+        size_t index = k + 1 + (lk->xpl ? 1 : 0);
+
+        return segment_listing_name(lk->segs[0].name, index, "", true);
+    }
+    return segment_listing_name(lk->segs[segment_of(lk, k)].name, k + 1,
+        named ? m->sname : "", true);
+}
+
+static bool write_listings(const Link *lk, const AsmModule *res)
+{
+    size_t k;
+
+    for (k = 0; k < lk->nmods; k++) {
+        char *name = listing_name(lk, k);
+        char *path = name != NULL ? join_dir(lk->dir, name) : NULL;
+        FILE *f;
+
+        if (name == NULL || path == NULL) {
+            free(name);
+            free(path);
+            fprintf(stderr, "out of memory\n");
+            return false;
+        }
+        f = fopen(path, "w");
+        if (f == NULL) {
+            perror(name);
+            free(name);
+            free(path);
+            return false;
+        }
+        listing_write(f, &res[k].lst);
+        if (fclose(f) != 0) {
+            fprintf(stderr, "asm816: cannot write %s\n", name);
+            free(name);
+            free(path);
+            return false;
+        }
+        printf("     => Creating Output file '%s'\n", name);
+        free(name);
+        free(path);
+    }
+    return true;
+}
+
+int link_run(const char *path, const char *macro_dir, bool listing)
 {
     Link lk;
     AsmModule *res = NULL;
@@ -1281,6 +1392,7 @@ int link_run(const char *path, const char *macro_dir)
         fprintf(stderr, "out of memory\n");
         return 1;
     }
+    lk.listing = listing;
     if (!parse_link(path, &lk) || !check_sources(&lk)) {
         goto out;
     }
@@ -1296,6 +1408,9 @@ int link_run(const char *path, const char *macro_dir)
         goto out;
     }
     if (!write_outputs(&lk, res) || !write_file_info_for(&lk, res)) {
+        goto out;
+    }
+    if (listing && !write_listings(&lk, res)) {
         goto out;
     }
     rc = 0;

@@ -8,6 +8,6 @@ bool is_link_file(const char *path);
 
 /* Links the flat binary segments named by a link file. Output files and
  * _FileInformation.txt go beside the link file. Returns the exit status. */
-int link_run(const char *path, const char *macro_dir);
+int link_run(const char *path, const char *macro_dir, bool listing);
 
 #endif

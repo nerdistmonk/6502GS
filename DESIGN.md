@@ -204,6 +204,7 @@ cross `$FFFF` and asm816 rejects. Examples: `ORG $0 / DS $FFFF / NOP / NOP`, `OR
 DS $10000` alone, and `ORG $1000 / DS $FFFF / NOP / NOP`. merlin32 also rejects others
 that end at the same address (`ORG $0 / DS $FFFD / NOP` x4, `ORG $FFFD / NOP` x4). No
 simple address or total-size rule matches all probes, and the cause was not identified.
+Decided (user): keep rejecting. merlin32's accepted output is a wrap artifact. `ORG $0 / DS $FFFF / NOP / NOP` gives a 256-byte object with the NOPs at `$0100`, and `ORG $1000 / DS $FFFF / NOP / NOP` gives the same 258-byte shape.
 
 Gaps confirmed, not yet fixed:
 
@@ -232,7 +233,7 @@ operand as `1hi`; asm816 lists `1`, and the bytes match. Not in the oracle cases
 
 Matches confirmed: `DS` fill and negative-value error, `HEX` odd-digit error and comma form, `LUP 0` and `LUP 26`, `END` stops reading, CRLF input, `:local` before global, `DO`/`FIN`, equate chains of 9 and 11, `PUT` without extension, 24-bit `ORG`, `REL` before code, plain macro call, stacked `MAC` with no call.
 
-Not yet probed: §14.2 buffer limits, OMF `_Output.txt` naming, and `DAT` time selectors 3, 4, 7, and 8 (clock-dependent, so not in oracle cases).
+Not yet probed: §14.2 buffer limits other than the LUP cap (macro parameter size, 256-entry RPN stack, 1024-byte operand buffer), OMF `_Output.txt` naming, and `DAT` time selectors 3, 4, 7, and 8 (clock-dependent, so not in oracle cases). The LUP cap matches: `LUP 32768` emits its body, and `LUP 32769` skips it (black-box, bytes identical).
 
 
 ## References
@@ -269,6 +270,10 @@ Link-rule probes against merlin32 (black-box; all resolved):
 - [x] REL with no `SAV`/`DSK` and `-v`: the listing is `_Output.txt` (merlin32 gives the same; was `rr_Output.txt`). Probed; fixed. No oracle case, since the runners need an output file. Checked by byte diff against merlin32.
 - [x] `DSK`/`SAV` name suffix. merlin32 drops one trailing `.L` (any case) from an assembly `DSK` or `SAV` name: `ABC.L` gives `ABC`, `AB.L.L` gives `AB.L`, `ABC.S` is kept. Link-file `DSK` keeps `.L` (`DSK OUT.L` gives `OUT.L`). asm816 now matches (`oracle/cases/output_dot_l.s`). Not matched: `DSK .L` alone, which merlin32 writes no file for.
 
+- [x] Link listings (`-v`) match merlin32 in every oracle case. Output names: a single module with `DSK` gives `_Output.txt`; a single module without `DSK` gives `<basename>_Output.txt`; a multi-module OMF link gives `<dsk>_S<XX>__Output.txt` (XPL shifts S by one); a multi-module flat link gives `<dsk>_S<XX>_<sna-or-blank>_Output.txt`; without `DSK` it gives `<sna-or-basename>_S<XX>_Output.txt`. merlin32 segfaults on `-v` when a module comes before the first `DSK` and a `DSK` follows; that is not mirrored. Rows: `ENT` gives an Empty row; `EXT` gives one External row per name with the next sequence number; an `ENT`'d label gives a Global row before its code row. The Reloc column is 9 characters: a local value shows `  N`, an external value shows `E N`, and `>`/`^` add ` >> 8`/` >>16`. `ozunid_N` numbering continues across link modules. Listing PCs keep a 16-bit offset per module with the module's start bank, so rows past `$FFFF` show `00/0000` in the first module and `01/0000` in a module that starts at `$10000`. Covered by `link_cases/*_listing`.
+- [x] Linked modules use the 3-byte absolute form for any label or `*` operand, even small values like `$10` or `$0` (`LDA L` gives `AD 10 00`). EQU constants stay direct page. In absolute linked modules, `L-M` between two labels is constant, while `-L`, `L,X`, `>L`, and `L+2` are relocatable. A data line with several values shows one reloc value (the first). Covered by `link_cases/abs_label_wide`.
+- [x] A relocatable label at `$0000` (`LDA PV`) uses the 3-byte absolute form with a reloc record, not direct page. Covered by `link_cases/rel_reloc_wide`.
+
 Deferred:
 
 - [ ] Disk image creation (see Scope).
@@ -279,4 +284,4 @@ The binary is named `asm816`.
 
 Phases 1-5 are done when the oracle suites (assembly, error, symbol, and link)
 pass for 6502, 65C02, and 65C816 sources, and all tests run under `ctest` on
-Linux with GCC. Status: met (`ctest` 76/76, including all oracle suites).
+Linux with GCC. Status: met (`ctest` 140/140, including all oracle suites; also clean under ASan/UBSan).

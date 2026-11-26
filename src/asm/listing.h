@@ -14,18 +14,22 @@ typedef enum {
     LST_DUM,
     LST_EMPTY,
     LST_EQUIV,
+    LST_EXTERNAL,
+    LST_GLOBAL,
     LST_MACRO,
     LST_VARIABLE
 } ListType;
 
 /* One displayed listing row. Label, opcode, operand and comment are NULL when
- * absent. For LST_COMMENT rows, comment holds the whole source line. */
+ * absent. For LST_COMMENT rows, comment holds the whole source line. reloc is
+ * the Reloc column text, empty when blank. */
 typedef struct {
     unsigned long line;
     int file;
     int fline;
     ListType type;
     char mx[3];
+    char reloc[12];
     int32_t pc;
     size_t boff;
     size_t nbytes;
@@ -53,6 +57,7 @@ void listing_free(Listing *l);
 bool listing_set_name(Listing *l, int file, const char *name);
 bool listing_put_byte(Listing *l, uint8_t b);
 bool listing_add_row(Listing *l, const ListRow *row);
+bool listing_insert_row(Listing *l, size_t at, const ListRow *row);
 void listing_write(FILE *out, const Listing *l);
 
 #endif

@@ -213,11 +213,11 @@ int main(int argc, char **argv)
     src = argv[argc - 1];
 
     if (is_link_file(src)) {
-        if (verbose) {
-            fprintf(stderr, "asm816: -v listings are not supported for link files\n");
+        if (table_cols >= 0 || console_cols >= 0) {
+            fprintf(stderr, "asm816: symbol tables are not supported for link files\n");
             return 1;
         }
-        return link_run(src, macro_dir);
+        return link_run(src, macro_dir, verbose);
     }
     if (!output_stem(src, stem, sizeof stem)) {
         fprintf(stderr, "asm816: cannot derive output name from %s\n", src);

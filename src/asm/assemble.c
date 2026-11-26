@@ -230,6 +230,10 @@ typedef struct {
      * macro labels in LUP bodies) follow after all phase A numbers of the run,
      * so ozbase holds the phase A total of the previous run. */
     int ozunid;
+    /* Phase A count a linked module starts from, so names run on across modules. */
+    int ozcarry;
+    /* Bank byte of the module's start; listing PCs keep the 16-bit offset within it. */
+    int32_t pc_bank;
     int ozbase;
     int ozb;
     int ozgen;
@@ -586,7 +590,7 @@ static void define_label_rel(Asm *a, const char *name, int32_t value, bool defin
     char key[SYM_KEY_MAX];
     Symbol *s;
     bool var = name[0] == ']';
-    ExprValue plain = { 0, false, a->rel && !a->rel_abs ? REL_LOCAL : REL_CONST, "" };
+    ExprValue plain = { 0, false, (a->rel && !a->rel_abs) || a->linked ? REL_LOCAL : REL_CONST, "" };
     const ExprValue *kv = rel != NULL ? rel : &plain;
 
     if (name[0] != ':' && !var) {
@@ -788,7 +792,7 @@ static bool eval_full(Asm *a, const char *text, bool grouped, ExprValue *ev)
     env.lookup = lookup_sym;
     env.ctx = a;
     env.pc = a->pc;
-    env.rel = a->rel && !a->rel_abs;
+    env.rel = (a->rel && !a->rel_abs) || a->linked;
     if (!(grouped ? expr_eval_grouped : expr_eval)(text, &env, ev, &err)) {
         diag(a, "%s", err);
         return false;
@@ -1061,10 +1065,10 @@ static bool record_fixup(Asm *a, size_t offset, const ExprValue *ev, int size, i
     Binary *bin = a->bin;
     Fixup *f;
 
-    if (!a->rel || a->pass != 2 || a->dummy || ev->kind == REL_CONST) {
+    if (!(a->rel || a->linked) || a->pass != 2 || a->dummy || ev->kind == REL_CONST) {
         return true;
     }
-    if (ev->kind == REL_BAD) {
+    if (ev->kind == REL_BAD && a->rel) {
         diag(a, "expression cannot be relocated");
         return false;
     }
@@ -1649,8 +1653,8 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
 {
     int32_t v = 0;
     bool defined = false;
-    bool ext_ref = false;
     size_t refs;
+    bool ext_ref = false;
     AddrMode small;
     AddrMode wide;
     size_t idx = a->wide_seq++;
@@ -1831,7 +1835,9 @@ static bool encode_instruction(Asm *a, const char *mnem, bool forced, const Oper
     if (!eval_operand(a, o->expr, &v, &defined)) {
         return false;
     }
-    ext_ref = a->ext_refs != refs;
+    /* merlin32 always uses the absolute form for relocatable operands in REL mode
+     * and in link modules. */
+    ext_ref = a->ext_refs != refs || ((a->rel || a->linked) && a->last_eval.kind != REL_CONST);
     if (o->index == 'S') {
         if (!lookup_mode(a, mnem, AM_SR, &out[0])) {
             return false;
@@ -1940,7 +1946,7 @@ static void instruction(Asm *a, const char *mnem, bool forced, const SrcLine *ln
     }
     a->last_eval.kind = REL_CONST;
     if (encode_instruction(a, mnem, forced || o.force_abs, &o, bytes, &size)) {
-        if (a->rel && size > 1 && !branch_operand(mnem, &o)
+        if ((a->rel || a->linked) && size > 1 && !branch_operand(mnem, &o)
             && !record_fixup(a, a->bin->len + 1, &a->last_eval, size - 1, reloc_shift(o.mod))) {
             return;
         }
@@ -3715,7 +3721,7 @@ static void list_operand(Asm *a, const ListRow *row, const char *op, Buf *out)
                 } else {
                     buf_add(out, name, n);
                 }
-            } else if (s != NULL && s->defined && s->is_equ) {
+            } else if (s != NULL && s->defined && s->is_equ && !s->ext) {
                 if (s->disp != NULL) {
                     buf_add(out, s->disp, strlen(s->disp));
                 } else {
@@ -3759,11 +3765,54 @@ static void list_operand(Asm *a, const ListRow *row, const char *op, Buf *out)
 /* Assembles one source line and, in pass 2 with a listing, records its row.
  * The row's bytes are the pool bytes from mark on; a skipped or hidden line
  * gives them back. */
+/* The Reloc column text for a fixup: "  N" for a local value, "E N" for an
+ * external one, plus a shift suffix for the > and ^ operators. */
+static void reloc_text(const Fixup *f, char *out, size_t cap)
+{
+    const char *suffix = f->shift == -8 ? " >> 8" : f->shift == -16 ? " >>16" : "";
+
+    snprintf(out, cap, "%s%d%s", f->external ? "E " : "  ", f->size, suffix);
+}
+
+/* Adds one External row per name on an EXT line. Each name takes its own
+ * sequence number, so the line's counter advances by one per extra name.
+ * Returns false when the line names nothing usable. */
+static bool add_external_rows(Asm *a, ListRow *row)
+{
+    const char *p = a->lst_ln.operand;
+    char name[ASM_NAME_MAX + 1];
+    bool any = false;
+    ListRow ext = *row;
+
+    ext.type = LST_EXTERNAL;
+    ext.operand = NULL;
+    ext.opcode = "EXT";
+    while (*p != '\0') {
+        if (!next_name(&p, name, sizeof name)) {
+            return any;
+        }
+        if (name[0] == ':') {
+            continue;
+        }
+        if (any) {
+            a->lst_seq++;
+        }
+        ext.line = a->lst_seq;
+        ext.label = name;
+        if (!listing_add_row(&a->lst, &ext)) {
+            fprintf(stderr, "out of memory\n");
+        }
+        any = true;
+    }
+    return any;
+}
+
 static void assemble_line(Asm *a, const char *text, LineOrigin org)
 {
     int32_t pc0 = a->pc;
     bool dum0 = a->dummy;
     size_t mark = a->lst.nbytes;
+    size_t nfix0 = a->bin != NULL ? a->bin->nfix : 0;
     ListRow row;
     char opc[OPCODE_MAX];
     char label_text[ASM_LINE_MAX + 2];
@@ -3820,6 +3869,8 @@ static void assemble_line(Asm *a, const char *text, LineOrigin org)
         /* merlin32 lists a bare ORG at the location it resumes. */
         row.pc = a->pc;
     }
+    /* merlin32 wraps the listing PC at 16 bits within a module, keeping the module's start bank. */
+    row.pc = (row.pc & 0xFFFF) | a->pc_bank;
     if (mx_unknown) {
         strcpy(row.mx, "??");
     } else {
@@ -3860,6 +3911,20 @@ static void assemble_line(Asm *a, const char *text, LineOrigin org)
         buf_init(&shown_op);
         list_operand(a, &row, a->lst_ln.operand, &shown_op);
         row.operand = shown_op.oom ? a->lst_ln.operand : shown_op.s;
+    }
+    if (a->bin != NULL && a->pass == 2 && a->lst_type != LST_MACRO && a->bin->nfix > nfix0) {
+        reloc_text(&a->bin->fix[nfix0], row.reloc, sizeof row.reloc);
+    }
+    if (a->lst_ln.has_opcode && word_is(a->lst_ln.opcode, "ENT")) {
+        /* merlin32 lists an ENT line as a blank row that keeps its comment. */
+        row.type = LST_EMPTY;
+        row.label = NULL;
+        row.opcode = NULL;
+        row.operand = NULL;
+    } else if (a->lst_ln.has_opcode && a->lst_ln.has_operand && word_is(a->lst_ln.opcode, "EXT") &&
+               add_external_rows(a, &row)) {
+        free(shown_op.s);
+        return;
     }
     row.line = a->lst_seq;
     if (!listing_add_row(&a->lst, &row)) {
@@ -4030,6 +4095,7 @@ static bool run_pass(Asm *a, int pass)
     a->line_no = 0;
     /* A standalone REL module is laid out from 0. bin->rel is set by an earlier run once REL is seen. */
     a->pc = (a->force_rel || (!a->linked && a->bin->rel)) ? 0 : a->start_pc;
+    a->pc_bank = a->pc & 0xFF0000;
     a->seg_base = a->pc;
     a->org_loc = a->pc;
     a->org_seen = false;
@@ -4047,7 +4113,7 @@ static bool run_pass(Asm *a, int pass)
     /* The first run has no previous total, so its phase B names sit far above
      * phase A names and cannot clash with them. Later runs reuse the same names. */
     a->ozbase = a->run == 0 ? OZ_FIRST_BASE : a->ozunid;
-    a->ozunid = 0;
+    a->ozunid = a->ozcarry;
     a->ozb = 0;
     a->ozgen++;
     a->wide_seq = 0;
@@ -4233,6 +4299,46 @@ static void asm_free(Asm *a)
 
 /* Runs the sizing passes, then pass 2 and the link records. *pass2_started
  * says whether pass 2 ran, which is when a listing is written. */
+/* merlin32 lists an ENT'd label as a Global row placed ahead of the label's
+ * code row. That row keeps the label's address and takes its own sequence
+ * number, so the code row loses its label and every later row moves down. */
+static void split_global_rows(Asm *a)
+{
+    Listing *l = &a->lst;
+    size_t i;
+
+    for (i = 0; i < l->nrows; i++) {
+        ListRow g;
+        size_t j;
+        bool is_ent = false;
+
+        if (l->rows[i].label == NULL) {
+            continue;
+        }
+        for (j = 0; j < a->ents.n && !is_ent; j++) {
+            is_ent = strcmp(a->ents.items[j].name, l->rows[i].label) == 0;
+        }
+        if (!is_ent) {
+            continue;
+        }
+        g = l->rows[i];
+        g.type = LST_GLOBAL;
+        g.opcode = "ENT";
+        g.operand = NULL;
+        g.comment = NULL;
+        g.nbytes = 0;
+        if (!listing_insert_row(l, i, &g)) {
+            return;
+        }
+        free(l->rows[i + 1].label);
+        l->rows[i + 1].label = NULL;
+        for (j = i + 1; j < l->nrows; j++) {
+            l->rows[j].line++;
+        }
+        i++;
+    }
+}
+
 static bool assemble_passes(Asm *a, bool *pass2_started)
 {
     bool ok = true;
@@ -4258,6 +4364,9 @@ static bool assemble_passes(Asm *a, bool *pass2_started)
     }
     ok = run_pass(a, 2);
     if (ok) {
+        if (a->listing) {
+            split_global_rows(a);
+        }
         collect_links(a);
     }
     return ok && a->errors == 0;
@@ -4333,7 +4442,7 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
     return ok;
 }
 
-bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, bool force_rel, const AsmName *globals, size_t nglobals, bool print_errors, AsmModule *out)
+bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, bool force_rel, const AsmName *globals, size_t nglobals, bool print_errors, bool listing, int ozunid_start, AsmModule *out)
 {
     Asm a;
     bool pass2_started;
@@ -4348,11 +4457,14 @@ bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, 
     a.start_pc = start_pc;
     a.force_rel = force_rel;
     a.linked = true;
+    a.listing = listing;
     a.globals = globals;
     a.nglobals = nglobals;
     a.quiet = !print_errors;
+    a.ozcarry = ozunid_start;
 
     ok = assemble_passes(&a, &pass2_started);
+    out->ozunid_end = a.ozunid;
     if (!ok && a.err_has && print_errors) {
         fprintf(stderr, "      => [Error] %s\n", a.err_msg);
     }
@@ -4363,6 +4475,8 @@ bool assemble_module(const char *path, const char *macro_dir, int32_t start_pc, 
         out->imports = a.imports.items;
         out->nimports = a.imports.n;
         a.imports.items = NULL;
+        out->lst = a.lst;
+        memset(&a.lst, 0, sizeof a.lst);
     } else {
         binary_free(&out->bin);
     }
@@ -4375,6 +4489,7 @@ void module_free(AsmModule *m)
     binary_free(&m->bin);
     free(m->exports);
     free(m->imports);
+    listing_free(&m->lst);
     memset(m, 0, sizeof *m);
 }
 
