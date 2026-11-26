@@ -1,0 +1,9 @@
+ ORG $1000
+L NOP
+ LDA -L
+ LDA -L,X
+ DFB -L
+ DW -L
+ LDA L-1
+ LDA -L-1
+ END

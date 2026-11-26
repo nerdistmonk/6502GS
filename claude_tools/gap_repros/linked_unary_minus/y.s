@@ -1,0 +1,5 @@
+ ORG $2000
+M NOP
+ LDA -M
+ DFB -M
+ END

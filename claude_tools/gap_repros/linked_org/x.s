@@ -1,0 +1,4 @@
+ ORG $1000
+BK NOP
+ LDA BK
+ END

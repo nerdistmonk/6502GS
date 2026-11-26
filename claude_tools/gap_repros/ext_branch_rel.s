@@ -1,0 +1,7 @@
+ REL
+ DSK brlx
+ EXT XT
+ ORG $1000
+ BRL XT
+ NOP
+ END

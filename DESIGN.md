@@ -54,20 +54,28 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `e58c3ee` (`PUT`/`USE` case-insensitive lookup). Uncommitted:
-  REL listing named `_Output.txt` when no `SAV`/`DSK` (group d now done). Groups
-  (a) to (d) are committed or pending commit; (e) link directives is next and needs
-  the XPL/AUX design. Phases 0–5 (flat and OMF linking, standalone REL) are
-  done. `ctest` passes 86/86 on GCC Debug with oracle paths.
-- Next step: no open link questions remain. Pick the next item from Open
-  questions or Deferred (disk image creation). Ask the user before any behavior
-  change.
+- Latest commit on `main`: `fa2c14c` (`Match merlin32 operand blank handling`).
+  Uncommitted: the "Open gaps" section below, the buffer-limit results, and the
+  `claude_tools/` probe helpers and repros. Commit and push only on the user's
+  explicit instruction.
+- Status: phases 0–5 are done (flat and OMF linking, standalone REL, XPL and AUX
+  link directives). The spec audit groups (a) to (d) are done. The open items
+  are the probe gaps in "Open gaps" below. No code has changed since `fa2c14c`.
+- Next step: the user has not chosen the unary-minus sizing rule. Ask one question
+  at a time, with the options "match merlin exactly", "any negative address is
+  absolute, low 16 bits", or "keep the spec rule (≤ $FF is 1 byte)". Then decide
+  how a negated relocatable label is encoded in a linked module. That needs an
+  OMF probe (`claude_tools/gap_repros/linked_unary_minus`). Ask before any
+  behavior change. The user said the project may be a lost cause, so confirm
+  direction before large work.
 - Build and test: `cmake -S . -B build && cmake --build build && cd build && ctest`.
   Oracle tests need `-DMERLIN32_BIN=/root/merlin32/Source/merlin32
   -DMERLIN32_LIB=/root/merlin32/Library`.
-- Probing merlin behavior: `claude_tools/probe_merlin.sh <case.s>` shows its
-  listing and bytes. `claude_tools/probe_both.sh <case.s>` diffs merlin32
-  against asm816. `claude_tools/build_asan.sh` runs the ASan/UBSan build and ctest.
+- Probing merlin behavior (`claude_tools/`): `probe_merlin.sh <case.s>` shows
+  its listing and bytes. `probe_both.sh <case.s>` diffs merlin32 against asm816
+  for one file. `probe_link_both.sh <dir> [flag]` does the same for a link
+  directory with `lk`. `build_asan.sh` runs the ASan/UBSan build and ctest.
+  Repros for each open gap are in `claude_tools/gap_repros/`.
 - Scratch files in `/tmp` are not part of the repo and can be discarded.
 
 ## Phases and status
@@ -232,7 +240,7 @@ Operands follow merlin32's tokenizer. Blanks outside quotes are dropped, so `DFB
 
 Matches confirmed: `DS` fill and negative-value error, `HEX` odd-digit error and comma form, `LUP 0` and `LUP 26`, `END` stops reading, CRLF input, `:local` before global, `DO`/`FIN`, equate chains of 9 and 11, `PUT` without extension, 24-bit `ORG`, `REL` before code, plain macro call, stacked `MAC` with no call.
 
-Buffer limits (§14.2), probed black-box. A macro parameter of 254, 256, or 258 characters (with quotes) assembles and matches merlin32 byte for byte. merlin32 aborts (exit 134, heap corruption) at 266, 274, and 292 characters, and its exact threshold between 258 and 266 is unknown. A left-nested 429-term expression matches. A 857-character operand matches; merlin32 aborts at 2285, and the threshold between them is unknown. asm816 has no limit at these sizes, and merlin32's crash has no defined output. Decided: asm816 keeps accepting any length. Not probed: the exact crash thresholds, and a right-nested expression deep enough to exceed the 256-entry RPN stack (the 1024-byte operand limit may cap its depth first). `DAT` time selectors 3, 4, 7, and 8 are clock-dependent and not in the oracle cases. The LUP cap matches: `LUP 32768` emits its body, and `LUP 32769` skips it (black-box, bytes identical).
+Buffer limits (§14.2), probed black-box. A macro parameter of 254, 256, or 258 characters (with quotes) assembles and matches merlin32 byte for byte. merlin32 aborts (exit 134, heap corruption) at 266, 274, and 292 characters. Measured thresholds: a quoted macro parameter crashes at a total of 265 characters (with quotes), and an unquoted one at 266. A left-nested 429-term expression matches. An operand of 1023 characters is fine and merlin32 crashes at 1024. A 857-character operand matches. asm816 has no limit at these sizes, and merlin32's crash has no defined output. Decided: asm816 keeps accepting any length. Not probed: a right-nested expression deep enough to exceed the 256-entry RPN stack (the 1024-byte operand limit may cap its depth first). `DAT` time selectors 3, 4, 7, and 8 are clock-dependent and not in the oracle cases. The LUP cap matches: `LUP 32768` emits its body, and `LUP 32769` skips it (black-box, bytes identical).
 
 
 ## References
@@ -246,6 +254,47 @@ All paths are relative to the reference library at `/root/iigs-workspace/Referen
   - Conditionals: p.114-116. Miscellaneous: p.119. Macros: p.127. Linker: p.137-155
 - 65C02 and 65C816 opcode reference: WDC datasheets in `Reference Docs - Hardware/`
 - Oracle binary: merlin32 v1.1.10, used as a black box only
+
+## Open gaps (merlin32 probes, not fixed)
+
+Found by black-box probes after the spec audit. Each was confirmed at runtime
+against merlin32. Repros are in `claude_tools/gap_repros/`.
+
+- [ ] Unary `-` on address operands. asm816 rejects `LDA -1`, `LDA -L`,
+  `LDA -L-1`, `JSR -L`, and `LDA -L,X` with "Impossible to decode address mode".
+  `DFB -L`, `DW -L`, `LDA #-L`, `LDA L-1`, and `DFB -L&$FF` already match.
+  Merlin, standalone: `-1` → `A5 FF` (direct page). `-2` through `-255` →
+  "Operand address '-N' ... outside of the Direct Page" (exit 1). `-256` →
+  `AD 00 FF`, `-4096` → `AD 00 F0`, `-65536` → `AD 00 00`, so values ≤ -256 are
+  absolute with the low 16 bits. Merlin, linked absolute module: `LDA -L` →
+  `AD FD EF` (reloc `2`), `LDA -L+1` → `AD FE EF`, `LDA -L-1` → `AD FC EF`,
+  `JSR -L` → `20 FD EF`, `DW -L` → `FD EF`, `LDA -L,X` → `BD FD EF`. Spec §9.2
+  says negatives ≤ $FF are 1 byte, which conflicts with the `-2..-255` error.
+  Causes: `parse_primary` (`src/asm/expr.c`) marks a negated relocatable value
+  REL_BAD, and `put_word_trunc` (`src/asm/assemble.c`) rejects every negative
+  with `mode_error`. Blocked on the sizing-rule choice.
+- [ ] `^` bank prefix on `DFB`, `DW`, `ADRL`, `PEA`, and direct-page `LDA`.
+  Merlin shifts right 16 (spec §9.3): `DFB ^$010010` → `01`. asm816 errors
+  "expected a number, label, character, or '*'". `gap_repros/caret_prefix.s`.
+- [ ] External branch in REL mode: `BRL XT` / `BRA XT` with `EXT XT`. Merlin
+  encodes target 0 with no reloc and offset `0-(PC+len)`, and errors only when
+  that offset is out of range. asm816 errors "Bad Jump ... Too long".
+  `gap_repros/ext_branch_rel.s`.
+- [ ] Linked module with its own `ORG`. Merlin encodes a label in direct page
+  with no reloc (`LDA BK` → `A5 00`). asm816 uses `AD 00 00` with reloc `2`.
+  Only two data points, both from one link file. `gap_repros/linked_org/`.
+- [ ] Listing-only, bytes match: the DW Reloc column in linked ORG modules
+  (merlin blank, asm816 `2`), and the DUM bank after `ORG` inside `DUM` (merlin
+  `01/0010`, asm816 `00/0010`). `gap_repros/dum_bank.s`.
+- [ ] Macro named `PMC`: asm816 treats the bare opcode as the PMC directive and
+  errors "PMC needs a macro name". Merlin invokes the macro. Low priority.
+  `gap_repros/pmc_macro_name.s`.
+- [ ] Not probed: merlin32's message for `-vX`, `-VX`, and `-m`. Both assemblers
+  exit 1 on these.
+
+Probed and matched, no change needed: `;` after a spaced macro call (`MAC1 ; c`,
+`PMC MAC1 ; c`), no-DSK SNA basename, BRL in REL mode with local labels (OMF
+identical), and Phase-B ozunid across a 2-module OMF link (bytes and addresses).
 
 ## Open questions
 
