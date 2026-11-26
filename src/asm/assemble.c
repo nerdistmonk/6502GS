@@ -80,6 +80,8 @@ typedef struct {
     /* Run number of the most recent MAC line; a call is valid only after
      * that MAC line in the same run. */
     unsigned long def_run;
+    /* File of the most recent MAC line, named in the duplicate-macro warning. */
+    char file[INCLUDE_PATH_MAX];
 } Macro;
 
 typedef struct {
@@ -230,9 +232,11 @@ typedef struct {
     size_t nmacros;
     size_t capmacros;
     unsigned long run;
-    /* While a MAC body is being recorded, def is its macro and lines go there until EOM. */
-    Macro *def;
-    bool in_def;
+    /* While MAC bodies are being recorded, open_macs lists their indices in macros.
+     * Stacked MAC headers all stay open, and each body line goes to every one until EOM. */
+    size_t *open_macs;
+    size_t nopen;
+    size_t capopen;
     Frame *frames;
     size_t nframes;
     size_t capframes;
@@ -3047,24 +3051,41 @@ static void begin_macro(Asm *a, const char *name)
         memset(m, 0, sizeof *m);
         snprintf(m->name, sizeof m->name, "%s", name);
     } else if (m->def_run == a->run) {
-        diag(a, "duplicate label");
+        /* merlin32 keeps the last definition. */
+        warn(a, "Macro : '%s' found in '%s' and '%s'", name, m->file, a->path);
     }
     free_lines(m->lines, m->nlines);
     m->lines = NULL;
     m->nlines = 0;
     m->caplines = 0;
     m->def_run = a->run;
-    a->def = m;
-    a->in_def = true;
-    a->def_listed = cond_active(a);
+    snprintf(m->file, sizeof m->file, "%s", a->path);
+    if (a->nopen == a->capopen) {
+        size_t cap = a->capopen ? a->capopen * 2 : 4;
+        size_t *grown = realloc(a->open_macs, cap * sizeof *grown);
+
+        if (grown == NULL) {
+            fprintf(stderr, "out of memory\n");
+            return;
+        }
+        a->open_macs = grown;
+        a->capopen = cap;
+    }
+    if (a->nopen == 0) {
+        a->def_listed = cond_active(a);
+    }
+    a->open_macs[a->nopen++] = (size_t)(m - a->macros);
 }
 
-/* Stores one line of a MAC body. The body ends at EOM in the opcode field. */
+/* Stores one line of a MAC body. A MAC header while bodies are open stacks a
+ * new macro on them; EOM closes all of them. An EOM label becomes an empty
+ * line at the end of every closing body. */
 static void record_macro_line(Asm *a, const char *text)
 {
     SrcLine ln;
     const char *err = NULL;
     bool parsed = parse_line(text, &ln, &err);
+    size_t i;
 
     a->lst_vis = a->def_listed ? LV_SHOW : LV_SKIP;
     a->lst_type = LST_DIRECTIVE;
@@ -3072,15 +3093,33 @@ static void record_macro_line(Asm *a, const char *text)
         a->lst_ln = ln;
     }
     if (parsed && is_macro_end(&ln)) {
-        a->in_def = false;
-        a->def = NULL;
+        for (i = 0; ln.has_label && i < a->nopen; i++) {
+            Macro *m = &a->macros[a->open_macs[i]];
+
+            if (!append_line(&m->lines, &m->nlines, &m->caplines, ln.label)) {
+                fprintf(stderr, "out of memory\n");
+            }
+        }
+        a->nopen = 0;
+        return;
+    }
+    if (parsed && ln.has_opcode && word_is(ln.opcode, "MAC")) {
+        if (ln.has_label) {
+            begin_macro(a, ln.label);
+        } else {
+            diag(a, "MAC needs a name");
+        }
         return;
     }
     if (parsed && ln.has_label && ln.label[0] == ']') {
         a->ozunid++;
     }
-    if (!append_line(&a->def->lines, &a->def->nlines, &a->def->caplines, text)) {
-        fprintf(stderr, "out of memory\n");
+    for (i = 0; i < a->nopen; i++) {
+        Macro *m = &a->macros[a->open_macs[i]];
+
+        if (!append_line(&m->lines, &m->nlines, &m->caplines, text)) {
+            fprintf(stderr, "out of memory\n");
+        }
     }
 }
 
@@ -3352,14 +3391,43 @@ static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_ope
 }
 
 /* NAME args calls a macro; PMC NAME calls it with no arguments. */
-static void macro_line(Asm *a, const SrcLine *ln, bool pmc)
+/* PMC and >>> name the macro as "name<delim>args". The name ends at the first
+ * '.', ',', '/', '-', '(' or space. A space gives no arguments, as in merlin32. */
+static bool explicit_call_op(const char *name)
 {
-    const char *target = pmc ? ln->operand : ln->opcode;
+    return strcmp(name, "PMC") == 0 || strcmp(name, ">>>") == 0;
+}
+
+static void macro_line(Asm *a, const SrcLine *ln, bool explicit_call)
+{
+    char name[ASM_NAME_MAX + 1];
+    const char *target = ln->opcode;
+    const char *args = explicit_call ? "" : ln->operand;
+    bool has_args = ln->has_operand && !explicit_call;
     const Macro *m;
 
-    if (pmc && !ln->has_operand) {
-        diag(a, "PMC needs a macro name");
-        return;
+    if (explicit_call) {
+        const char *p = ln->operand;
+        size_t n = 0;
+
+        if (!ln->has_operand) {
+            diag(a, "PMC needs a macro name");
+            return;
+        }
+        while (p[n] != '\0' && strchr(".,/-( ", p[n]) == NULL) {
+            n++;
+        }
+        if (n >= sizeof name) {
+            diag(a, "NOT MACRO");
+            return;
+        }
+        memcpy(name, p, n);
+        name[n] = '\0';
+        target = name;
+        if (p[n] != '\0' && p[n] != ' ') {
+            args = p + n + 1;
+            has_args = true;
+        }
     }
     m = find_macro(a, target);
     if (m == NULL) {
@@ -3369,8 +3437,9 @@ static void macro_line(Asm *a, const SrcLine *ln, bool pmc)
     if (ln->has_label) {
         define_label(a, ln->label, a->pc, true, false);
     }
-    call_macro(a, m, pmc ? "" : ln->operand, !pmc && ln->has_operand);
+    call_macro(a, m, args, has_args);
 }
+
 
 /* A LUP count of zero, a negative count, or more than $8000 assembles
  * nothing, as in merlin32. */
@@ -3616,7 +3685,7 @@ static void assemble_line(Asm *a, const char *text, LineOrigin org)
     a->lst_zero = false;
     memset(&a->lst_ln, 0, sizeof a->lst_ln);
     mx_unknown = a->ncond > 0 && !a->conds[a->ncond - 1];
-    if (a->in_def) {
+    if (a->nopen > 0) {
         record_macro_line(a, text);
     } else {
         assemble_statement(a, text);
@@ -3783,17 +3852,17 @@ static void assemble_statement(Asm *a, const char *text)
                 a->lst_vis = a->nframes == 1 ? LV_SHOW : LV_HIDE;
             }
         } else if (!cond_active(a)) {
-            if (strcmp(name, "PMC") != 0 && find_macro(a, ln.opcode) == NULL) {
+            if (!explicit_call_op(name) && find_macro(a, ln.opcode) == NULL) {
                 skipped_op(a, name);
             }
-        } else if (strcmp(name, "PMC") == 0 || find_macro(a, ln.opcode) != NULL) {
+        } else if (explicit_call_op(name) || find_macro(a, ln.opcode) != NULL) {
             a->lst_type = LST_MACRO;
             if (a->nframes == 1 && !a->lup_open) {
                 a->lst_vis = LV_SHOW;
             } else {
                 a->lst_vis = (a->nframes > 1 || a->lup_open) ? LV_COUNT : LV_HIDE;
             }
-            macro_line(a, &ln, strcmp(name, "PMC") == 0);
+            macro_line(a, &ln, explicit_call_op(name));
         } else if (strcmp(name, "EQU") == 0 || strcmp(name, "=") == 0) {
             int32_t v = 0;
             bool defined = false;
@@ -3886,6 +3955,7 @@ static bool run_pass(Asm *a, int pass)
     a->ozgen++;
     a->wide_seq = 0;
     a->run++;
+    a->nopen = 0;
 
     while (a->nframes > 0) {
         pop_frame(a);
@@ -3946,6 +4016,7 @@ static void free_macros(Asm *a)
         free_lines(a->macros[i].lines, a->macros[i].nlines);
     }
     free(a->macros);
+    free(a->open_macs);
 }
 
 static int cmp_numerical(const void *x, const void *y)

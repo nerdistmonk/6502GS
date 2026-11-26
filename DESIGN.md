@@ -183,9 +183,18 @@ shadowing, left-to-right outside braces, STR over 255 rejected, nested PUT
 ignored, `]9` error, `STX $1234,Y` error.
 
 Audit of §2, §3.2, §5–§8, §11–§13 (black-box, runtime-probed against merlin32).
+Group (b), macros, fixed (byte-identical to merlin32, oracle cases
+`macro_stacked.s`, `macro_explicit_call.s`, `macro_duplicate.s`,
+`macro_eom_label.s`): stacked `MAC` headers (body lines go to all open macros
+until `EOM`); `PMC` and `>>>` split `name<delim>args` at `.`, `,`, `/`, `-`,
+`(` (a space gives no args); duplicate names warn and keep the last definition;
+`EOM label` emits an empty row named `ozunid_N` per expansion.
+Error-only forms (both assemblers error, exit 1, wording differs, so not oracle
+cases): `PMC`/`>>>` with no delimiter (`MOVE#$10`), and a space after the name
+(`PMC MOVE #$10;$20`), which passes no arguments.
+
 Gaps confirmed, not yet fixed (no behavior change made):
 
-- Macros: stacked `MAC` headers (fall-through) unsupported; `PMC` gives "NOT MACRO"; `>>>` unknown; duplicate macro names (merlin32 warns and uses the last definition) error as "duplicate label".
 - Size limits: `DUM` past `$FFFF` and object code past `$10000` are accepted by asm816 (merlin32 errors).
 - Bare `ORG` is rejected by asm816 (merlin32 restores the global origin). `REL` after a label or code is accepted (merlin32 errors).
 - `DSK ABC.L` writes `ABC.L` (merlin32 writes `ABC`).

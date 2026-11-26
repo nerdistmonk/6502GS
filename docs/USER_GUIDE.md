@@ -181,6 +181,15 @@ NAME    MAC
 - `]0` is the argument count, `]1` to `]8` are the positional arguments.
 - Labels inside the body become `ozunid_N` names, numbered per expansion.
 - `MAC` bodies end at `EOM` or `<<<`.
+- A `MAC` header inside an open body stacks: every following body line goes to
+  all open macros until `EOM`. The header line itself is not added to the
+  outer macro, as in merlin32.
+- `EOM label` (or `label <<<`) adds the label as a body line, so each
+  expansion ends with an empty listing row named `ozunid_N`.
+- Explicit calls are `PMC name<delim>args` or `>>>name<delim>args`, with
+  `<delim>` one of `.` `,` `/` `-` `(`. The arguments follow the delimiter. A
+  space after the name gives no arguments, as in merlin32.
+- Defining a macro name again prints a warning and keeps the last definition.
 - A `:` local name in a macro call's operand is an error, as in merlin32.
 - `IF c?]n` compares the first character of argument n with `c`. The test is
   decided at expansion.
