@@ -2971,13 +2971,21 @@ static bool splice_lines(Asm *a, char **lines, size_t nlines, bool ends_nl, int 
             a->line_no = (int)(i + 1);
         }
         if (has_op && (word_is(ln.opcode, "PUT") || word_is(ln.opcode, "USE") || word_is(ln.opcode, "PUTBIN"))) {
+            bool putbin = word_is(ln.opcode, "PUTBIN");
+
+            if (putbin && in_mac) {
+                if (!source_add(out, lines[i], org)) {
+                    return false;
+                }
+                continue;
+            }
             if (macro_only) {
                 continue;
             }
             if (!in_mac && !source_add(out, lines[i], org)) {
                 return false;
             }
-            if (word_is(ln.opcode, "PUTBIN")) {
+            if (putbin) {
                 if (expand && !in_mac && !putbin_rows(a, ln.has_operand ? ln.operand : "", out)) {
                     return false;
                 }
@@ -3364,6 +3372,28 @@ static bool colon_operand(const char *text)
 
 /* Expands a macro call into a new frame. Each body label gets a fresh
  * ozunid_N name for this expansion, numbered from the shared counter. */
+/* Adds one expanded macro body line. A DAT or PUTBIN line gets the rows that
+ * splice_lines gives it at top level, so macros list them the same way. */
+static bool add_body_line(Asm *a, const char *text, LineOrigin org, Source *out)
+{
+    SrcLine ln;
+    const char *err = NULL;
+
+    if (!source_add(out, text, org)) {
+        return false;
+    }
+    if (!parse_line(text, &ln, &err) || !ln.has_opcode) {
+        return true;
+    }
+    if (word_is(ln.opcode, "DAT")) {
+        return dat_row(a, &ln, org, out);
+    }
+    if (word_is(ln.opcode, "PUTBIN")) {
+        return putbin_rows(a, ln.has_operand ? ln.operand : "", out);
+    }
+    return true;
+}
+
 static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_operand)
 {
     char args[MACRO_ARGS][ASM_LINE_MAX];
@@ -3371,7 +3401,7 @@ static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_ope
     size_t nbody = m->nlines;
     LabelMap *map;
     char **lines;
-    LineOrigin *org;
+    Source body = {0};
     size_t nmap = 0;
     size_t i;
     bool in_lup = a->lup_open && !a->lup_skip;
@@ -3436,18 +3466,17 @@ static void call_macro(Asm *a, const Macro *m, const char *operand, bool has_ope
         }
     }
     free(map);
-    org = malloc((nbody ? nbody : 1) * sizeof *org);
-    if (org == NULL) {
-        fprintf(stderr, "out of memory\n");
-        free_lines(lines, nbody);
-        return;
-    }
     for (i = 0; i < nbody; i++) {
-        org[i] = a->cur_org;
+        if (!add_body_line(a, lines[i], a->cur_org, &body)) {
+            fprintf(stderr, "out of memory\n");
+            source_free(&body);
+            free_lines(lines, nbody);
+            return;
+        }
     }
-    if (!push_frame(a, lines, org, nbody)) {
-        free_lines(lines, nbody);
-        free(org);
+    free_lines(lines, nbody);
+    if (!push_frame(a, body.lines, body.org, body.n)) {
+        source_free(&body);
     }
 }
 

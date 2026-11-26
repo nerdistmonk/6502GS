@@ -211,6 +211,7 @@ Gaps confirmed, not yet fixed:
 - `REL` after code, a label, `DS`, `DFB`, or `LDA`: no error in either assembler (probed). The earlier "merlin32 errors" claim was not reproduced and has been dropped.
 - Link files: `BSZ` and `DS` before `ASM` already match. `XPL` and `AUX` are implemented (see resolved list).
 - Error text differs but exit code matches: `ELSE` without `DO`, LUP count over 26, nested LUP, `]9`, `REV` bad string.
+- `PUTBIN` and `DAT` inside a macro body: the binary matches merlin32 (rows emitted at each invocation; probed with a repeated call). The listing does not match, and it is not fixed (decided: binary only). merlin32 (a) lists the PUTBIN `HEX` rows as Directive rows (size 0, attributed to the PUTBIN file) at the macro definition, (b) numbers but hides the PUTBIN and DAT directive rows at invocation, leaving gaps in the row numbers, and (c) attributes the invocation's data rows to the caller's file and line. asm816 shows the directive rows and attributes the data to the PUTBIN file. Not in oracle cases, because the oracle compares listings. Not probed: `PUT`/`USE` inside a macro body (asm816 includes those files at splice time, as before).
 
 Group (a) fixed (byte-identical to merlin32, listing checked): `DDB` (big-endian),
 `CHK` (XOR of preceding bytes), `STRL` (2-byte length, no 255 limit), `PUTBIN`
@@ -231,7 +232,7 @@ operand as `1hi`; asm816 lists `1`, and the bytes match. Not in the oracle cases
 
 Matches confirmed: `DS` fill and negative-value error, `HEX` odd-digit error and comma form, `LUP 0` and `LUP 26`, `END` stops reading, CRLF input, `:local` before global, `DO`/`FIN`, equate chains of 9 and 11, `PUT` without extension, 24-bit `ORG`, `REL` before code, plain macro call, stacked `MAC` with no call.
 
-Not yet probed: §14.2 buffer limits, OMF `_Output.txt` naming, `DAT` time selectors 3, 4, 7, and 8 (clock-dependent, so not in oracle cases), and PUTBIN or DAT inside a macro body at invocation.
+Not yet probed: §14.2 buffer limits, OMF `_Output.txt` naming, and `DAT` time selectors 3, 4, 7, and 8 (clock-dependent, so not in oracle cases).
 
 
 ## References
