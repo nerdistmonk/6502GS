@@ -54,13 +54,13 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `fa2c14c` (`Match merlin32 operand blank handling`).
-  Uncommitted: the "Open gaps" section below, the buffer-limit results, and the
-  `claude_tools/` probe helpers and repros. Commit and push only on the user's
-  explicit instruction.
+- Latest commit on `main`: `74197db` (`Record merlin32 gaps and add link probe
+  helper`). Its docs and `claude_tools/` helpers are pushed. No uncommitted
+  changes. Commit and push only on the user's explicit instruction.
 - Status: phases 0–5 are done (flat and OMF linking, standalone REL, XPL and AUX
   link directives). The spec audit groups (a) to (d) are done. The open items
-  are the probe gaps in "Open gaps" below. No code has changed since `fa2c14c`.
+  are the probe gaps in "Open gaps" below. No code has changed since `fa2c14c`
+  (the last code commit).
 - Next step: the user has not chosen the unary-minus sizing rule. Ask one question
   at a time, with the options "match merlin exactly", "any negative address is
   absolute, low 16 bits", or "keep the spec rule (≤ $FF is 1 byte)". Then decide
