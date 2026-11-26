@@ -206,7 +206,10 @@ NAME    MAC
 loops, and conditionals.
 
 - `PUT` resolves relative to the directory of the file that contains it.
-  Absolute paths open directly, as in merlin32.
+  Absolute paths open directly, as in merlin32. If the exact name is missing,
+  a file whose name differs only in case is used (`PUT INC.S` finds `inc.s`).
+  The exact name wins when both exist. If several names differ only by case,
+  which one is used is not defined.
 - `USE` searches the same place, then the macro library (`-m`). A file found
   in the library keeps only its `MAC`…`EOM` blocks.
 - A name with at least 3 characters and no `.` in its last path component gets

@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -2649,16 +2650,49 @@ static bool dir_of(const char *path, char *dir, size_t cap)
     return true;
 }
 
+/* Compares two file names, ignoring ASCII case. */
+static bool name_eq_ci(const char *a, const char *b)
+{
+    for (; *a != '\0' && *b != '\0'; a++, b++) {
+        if (toupper((unsigned char)*a) != toupper((unsigned char)*b)) {
+            return false;
+        }
+    }
+    return *a == *b;
+}
+
+/* Opens dir/name. If the exact name is missing, a file whose name differs
+ * only in case is used, as in merlin32. */
 static FILE *open_in_dir(const char *dir, const char *name)
 {
     char path[INCLUDE_PATH_MAX];
+    struct dirent *e;
+    DIR *d;
+    FILE *f = NULL;
     int len;
 
     len = snprintf(path, sizeof path, "%s/%s", dir, name);
     if (len < 0 || (size_t)len >= sizeof path) {
         return NULL;
     }
-    return fopen(path, "r");
+    f = fopen(path, "r");
+    if (f != NULL) {
+        return f;
+    }
+    d = opendir(dir);
+    if (d == NULL) {
+        return NULL;
+    }
+    while (f == NULL && (e = readdir(d)) != NULL) {
+        if (name_eq_ci(e->d_name, name)) {
+            len = snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+            if (len >= 0 && (size_t)len < sizeof path) {
+                f = fopen(path, "r");
+            }
+        }
+    }
+    closedir(d);
+    return f;
 }
 
 /* Growing list of source lines, each with its listing origin. */
