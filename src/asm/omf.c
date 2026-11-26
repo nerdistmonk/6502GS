@@ -7,6 +7,16 @@
 #define BANK_SIZE 0x10000
 #define BODY_MAX 0xFFFF
 #define NAME_LEN 10
+/* The ExpressLoad segment: its SEGNAME, KIND, and header length. */
+#define EXPRESS_NAME "~ExpressLoad"
+#define EXPRESS_KIND 0x8001
+#define EXPRESS_HDR_LEN (HDR_FIXED_LEN + NAME_LEN + 1 + (sizeof EXPRESS_NAME - 1))
+/* Bytes of the payload before the segment tables: DWORD 0 and WORD count - 1. */
+#define EXPRESS_PREFIX 6
+/* Payload bytes per segment: a header entry, a segnum, and the fixed part of a segment header entry. */
+#define EXPRESS_HDR_ENTRY 8
+#define EXPRESS_SEGNUM 2
+#define EXPRESS_SEG_FIXED 16
 
 #define OP_END 0x00
 #define OP_LCONST 0xF2
@@ -29,6 +39,17 @@ typedef struct {
     size_t cap;
     bool oom;
 } Buf;
+
+/* Where the parts of one written segment sit, relative to its first byte. */
+typedef struct {
+    /* DISPDATA: the header length. The LCONST record starts here. */
+    size_t hdr;
+    /* LENGTH: the body length. */
+    size_t body;
+    /* The relocation records, or the LCONST record when there are none. */
+    size_t rel_at;
+    size_t rel_len;
+} SegInfo;
 
 static void buf_put(Buf *b, uint8_t c)
 {
@@ -234,8 +255,10 @@ static void pad_name(const char *s, size_t len, uint8_t out[NAME_LEN])
     }
 }
 
-/* Appends one segment: header, LCONST body, relocation records, and END. */
-static const char *append_segment(const OmfSegment *seg, Buf *file)
+/* Appends one segment: header, LCONST body, relocation records, and END. An
+ * express segment has BANKSIZE 0 and a LOADNAME of zeros. When info is not
+ * NULL it receives the segment's part offsets. */
+static const char *append_segment(const OmfSegment *seg, bool express, Buf *file, SegInfo *info)
 {
     Buf rec = { 0 };
     const char *err = NULL;
@@ -245,6 +268,7 @@ static const char *append_segment(const OmfSegment *seg, Buf *file)
     size_t hdr_len;
     bool labten;
     size_t body_at;
+    size_t body_end;
     size_t i;
 
     if (seg->body_len > BODY_MAX) {
@@ -289,8 +313,20 @@ static const char *append_segment(const OmfSegment *seg, Buf *file)
     sname_len = seg->sname != NULL ? strlen(seg->sname) : 0;
     labten = sname_len <= NAME_LEN;
     hdr_len = HDR_FIXED_LEN + NAME_LEN + (labten ? NAME_LEN : 1 + sname_len);
-    pad_name(seg->lname, seg->lname != NULL ? strlen(seg->lname) : 0, lname);
+    if (express) {
+        memset(lname, 0, NAME_LEN);
+    } else {
+        pad_name(seg->lname, seg->lname != NULL ? strlen(seg->lname) : 0, lname);
+    }
     pad_name(seg->sname, sname_len, sname);
+
+    body_end = body_at + seg->body_len;
+    if (info != NULL) {
+        info->hdr = hdr_len;
+        info->body = seg->body_len;
+        info->rel_len = rec.n - 1 - body_end;
+        info->rel_at = info->rel_len > 0 ? hdr_len + body_end : hdr_len;
+    }
 
     buf_le(file, (uint32_t)(hdr_len + rec.n), 4);
     buf_le(file, 0, 4);
@@ -299,7 +335,7 @@ static const char *append_segment(const OmfSegment *seg, Buf *file)
     buf_put(file, labten ? 0x0A : 0x00);
     buf_put(file, 0x04);
     buf_put(file, 0x02);
-    buf_le(file, BANK_SIZE, 4);
+    buf_le(file, express ? 0 : BANK_SIZE, 4);
     buf_le(file, seg->kind, 2);
     buf_le(file, 0, 2);
     buf_le(file, 0, 4);
@@ -324,7 +360,102 @@ static const char *append_segment(const OmfSegment *seg, Buf *file)
     return NULL;
 }
 
-const char *omf_build(const OmfSegment *segs, size_t nseg, uint8_t **out, size_t *outlen)
+/* Writes the ExpressLoad segment, SEGNUM 1, that indexes the segments that
+ * follow it in the file. Each real segment's table entries use absolute file
+ * offsets, so the ExpressLoad length is worked out first. */
+static const char *append_express(const OmfSegment *segs, size_t nseg, Buf *file)
+{
+    Buf real = { 0 };
+    Buf pl = { 0 };
+    SegInfo *info = calloc(nseg, sizeof *info);
+    size_t *start = calloc(nseg, sizeof *start);
+    const char *err = NULL;
+    size_t payload;
+    size_t el_len;
+    size_t acc = 0;
+    size_t s;
+    OmfSegment el;
+
+    if (info == NULL || start == NULL) {
+        err = "out of memory";
+        goto out;
+    }
+    for (s = 0; s < nseg && err == NULL; s++) {
+        start[s] = real.n;
+        err = append_segment(&segs[s], false, &real, &info[s]);
+    }
+    if (err == NULL && real.oom) {
+        err = "out of memory";
+    }
+    if (err != NULL) {
+        goto out;
+    }
+
+    payload = EXPRESS_PREFIX + (EXPRESS_HDR_ENTRY + EXPRESS_SEGNUM) * nseg;
+    for (s = 0; s < nseg; s++) {
+        payload += EXPRESS_SEG_FIXED + info[s].hdr - 12;
+    }
+    el_len = EXPRESS_HDR_LEN + 5 + payload + 1;
+
+    buf_le(&pl, 0, 4);
+    buf_le(&pl, (uint32_t)(nseg - 1), 2);
+    for (s = 0; s < nseg; s++) {
+        /* From the header entry to the segment header entry, both in the payload. */
+        size_t rel = (EXPRESS_HDR_ENTRY + EXPRESS_SEGNUM) * nseg + acc - EXPRESS_HDR_ENTRY * s;
+
+        if (rel > 0xFFFF) {
+            err = "too many segments for an ExpressLoad file";
+            goto out;
+        }
+        buf_le(&pl, (uint32_t)rel, 2);
+        buf_le(&pl, 0, 2);
+        buf_le(&pl, 0, 4);
+        acc += EXPRESS_SEG_FIXED + info[s].hdr - 12;
+    }
+    for (s = 0; s < nseg; s++) {
+        buf_le(&pl, (uint32_t)segs[s].segnum, 2);
+    }
+    for (s = 0; s < nseg; s++) {
+        size_t base = el_len + start[s];
+
+        buf_le(&pl, (uint32_t)(base + info[s].hdr + 5), 4);
+        buf_le(&pl, (uint32_t)info[s].body, 4);
+        buf_le(&pl, (uint32_t)(base + info[s].rel_at), 4);
+        buf_le(&pl, (uint32_t)info[s].rel_len, 4);
+        buf_bytes(&pl, real.p + start[s] + 12, info[s].hdr - 12);
+    }
+    if (pl.oom) {
+        err = "out of memory";
+        goto out;
+    }
+    if (pl.n != payload) {
+        err = "internal error: ExpressLoad table size";
+        goto out;
+    }
+
+    memset(&el, 0, sizeof el);
+    el.segnum = 1;
+    el.body = pl.p;
+    el.body_len = pl.n;
+    el.sname = EXPRESS_NAME;
+    el.kind = EXPRESS_KIND;
+    err = append_segment(&el, true, file, NULL);
+    if (err == NULL && file->n != el_len) {
+        err = "internal error: ExpressLoad length";
+    }
+    if (err == NULL) {
+        buf_bytes(file, real.p, real.n);
+    }
+
+out:
+    free(info);
+    free(start);
+    free(real.p);
+    free(pl.p);
+    return err;
+}
+
+const char *omf_build(const OmfSegment *segs, size_t nseg, bool express, uint8_t **out, size_t *outlen)
 {
     Buf file = { 0 };
     const char *err = NULL;
@@ -332,8 +463,12 @@ const char *omf_build(const OmfSegment *segs, size_t nseg, uint8_t **out, size_t
 
     *out = NULL;
     *outlen = 0;
-    for (s = 0; s < nseg && err == NULL; s++) {
-        err = append_segment(&segs[s], &file);
+    if (express) {
+        err = append_express(segs, nseg, &file);
+    } else {
+        for (s = 0; s < nseg && err == NULL; s++) {
+            err = append_segment(&segs[s], false, &file, NULL);
+        }
     }
     if (err == NULL && file.oom) {
         err = "out of memory";

@@ -41,9 +41,11 @@ typedef struct {
     uint32_t align;
 } OmfSegment;
 
-/* Builds an OMF v2.1 file of the given segments, in order. On success
- * returns NULL, sets *out to a malloc'd buffer and *outlen to its size. On
- * failure returns a static message and leaves *out NULL. */
-const char *omf_build(const OmfSegment *segs, size_t nseg, uint8_t **out, size_t *outlen);
+/* Builds an OMF v2.1 file of the given segments, in order. With express, an
+ * ExpressLoad segment (SEGNUM 1) that indexes them comes first, so their
+ * SEGNUMs must start at 2. On success returns NULL, sets *out to a malloc'd
+ * buffer and *outlen to its size. On failure returns a static message and
+ * leaves *out NULL. */
+const char *omf_build(const OmfSegment *segs, size_t nseg, bool express, uint8_t **out, size_t *outlen);
 
 #endif

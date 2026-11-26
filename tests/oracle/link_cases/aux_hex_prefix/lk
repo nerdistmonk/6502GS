@@ -1,0 +1,5 @@
+ TYP $B3
+ DSK LU
+ AUX #$1234
+ ASM x.s
+ SNA

@@ -1,0 +1,6 @@
+ TYP $06
+ DSK LU
+ ORG $800
+ AUX -5
+ ASM x.s
+ SNA

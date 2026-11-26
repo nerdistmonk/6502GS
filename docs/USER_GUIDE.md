@@ -251,6 +251,13 @@ Link files use merlin32's commands:
   `$00`, `$01`, `$02`, `$04`, `$08`, `$10`, or `$12`. A bare `KND` gives `$0000`.
   The default is `$1000`.
 - `ALI NONE|PAGE|BANK` sets the OMF alignment. The default is `NONE`.
+- `XPL` makes an OMF link with two or more modules start with an ExpressLoad
+  segment (`~ExpressLoad`, SEGNUM 1). The modules follow as SEGNUM 2 and up. A
+  link with one module gets none, and a flat `TYP $06` link ignores `XPL`.
+- `AUX value` sets the AuxType of the output's `_FileInformation.txt` entry. Only
+  the low 16 bits are kept, and the last `AUX` wins. `$` reads hex, `%` reads
+  binary, a leading `#` is skipped, and anything else reads decimal. Text that
+  does not parse gives `0000`.
 - `LNA`, `SNA`, `KND`, and `ALI` attach to the last `ASM` and need an `ASM` earlier
   in the file. Repeating `LNA` or `SNA` with the same name (ignoring case) is
   fine. A different name is an error. Repeating `KND` or `ALI` takes the last value.

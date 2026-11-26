@@ -153,7 +153,7 @@ static int write_omf(const char *name, const Binary *bin)
     seg.kind = 0x1000;
     seg.align = 0;
 
-    err = omf_build(&seg, 1, &out, &outlen);
+    err = omf_build(&seg, 1, false, &out, &outlen);
     if (err != NULL) {
         fprintf(stderr, "asm816: %s\n", err);
     } else {
@@ -168,7 +168,7 @@ static int write_omf(const char *name, const Binary *bin)
  * does, so other entries already in the file are kept. */
 static int write_file_info(const char *name, uint8_t file_type)
 {
-    if (!file_info_upsert("_FileInformation.txt", &name, 1, file_type)) {
+    if (!file_info_upsert("_FileInformation.txt", &name, 1, file_type, 0)) {
         fprintf(stderr, "asm816: cannot write _FileInformation.txt\n");
         return 1;
     }

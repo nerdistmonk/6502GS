@@ -7,12 +7,12 @@
 
 #define FOLDER_ZEROS "000000000000000000000000000000000000"
 
-void file_info_format(char *buf, size_t cap, const char *name, uint8_t file_type)
+void file_info_format(char *buf, size_t cap, const char *name, uint8_t file_type, uint16_t aux)
 {
     snprintf(buf, cap,
-        "%s=Type(%02X),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3),"
+        "%s=Type(%02X),AuxType(%04X),VersionCreate(70),MinVersion(BE),Access(E3),"
         "FolderInfo1(%s),FolderInfo2(%s)",
-        name, file_type, FOLDER_ZEROS, FOLDER_ZEROS);
+        name, file_type, aux, FOLDER_ZEROS, FOLDER_ZEROS);
 }
 
 /* Reads one line of any length without its newline. Returns NULL at end of
@@ -80,7 +80,7 @@ static bool is_last_name(const char *const *names, size_t n, size_t i)
     return find_name(names + i + 1, n - i - 1, names[i], strlen(names[i])) == n - i - 1;
 }
 
-bool file_info_upsert(const char *path, const char *const *names, size_t n, uint8_t file_type)
+bool file_info_upsert(const char *path, const char *const *names, size_t n, uint8_t file_type, uint16_t aux)
 {
     char *tmp_path = malloc(strlen(path) + 5);
     FILE *in = NULL;
@@ -113,7 +113,7 @@ bool file_info_upsert(const char *path, const char *const *names, size_t n, uint
         if (is_last_name(names, n, i)) {
             char entry[ASM_LINE_MAX + 256];
 
-            file_info_format(entry, sizeof entry, names[i], file_type);
+            file_info_format(entry, sizeof entry, names[i], file_type, aux);
             ok = write_line(out, entry, terminate);
         }
     }

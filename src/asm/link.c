@@ -62,6 +62,12 @@ typedef struct {
     int typ;
     /* The output is an OMF file: one segment per module, no ORG. */
     bool omf;
+    /* XPL was seen. An OMF link with more than one module then gets an
+     * ExpressLoad segment in front of them. Flat links ignore it. */
+    bool xpl;
+    /* Low 16 bits of the last AUX, used as AuxType for every
+     * _FileInformation.txt entry. */
+    uint16_t aux;
 } Link;
 
 enum { LS_NONE, LS_DSK, LS_ORG, LS_ASM };
@@ -404,6 +410,68 @@ static bool valid_kind(uint8_t low)
     return false;
 }
 
+/* Value of one hex digit, or -1 when c is not one. */
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+/* Reads an AUX operand as merlin32 does. It never fails: text it cannot use
+ * gives 0. A leading # is skipped. $ reads hex, % reads binary, and anything
+ * else reads decimal. One sign may follow the base mark. In binary, + and -
+ * are skipped wherever they appear and never negate. The result is the low
+ * 16 bits. */
+static uint16_t aux_value(const char *s)
+{
+    uint32_t v = 0;
+    bool neg = false;
+    int d;
+
+    if (*s == '#') {
+        s++;
+    }
+    if (*s == '$') {
+        s++;
+        if (*s == '-' || *s == '+') {
+            neg = *s == '-';
+            s++;
+        }
+        while ((d = hex_digit(*s)) >= 0) {
+            v = v * 16 + (uint32_t)d;
+            s++;
+        }
+    } else if (*s == '%') {
+        s++;
+        for (; *s == '0' || *s == '1' || *s == '+' || *s == '-'; s++) {
+            if (*s == '0' || *s == '1') {
+                v = v * 2 + (uint32_t)(*s - '0');
+            }
+        }
+    } else {
+        if (*s == '-' || *s == '+') {
+            neg = *s == '-';
+            s++;
+        }
+        while (*s >= '0' && *s <= '9') {
+            v = v * 10 + (uint32_t)(*s - '0');
+            s++;
+        }
+    }
+    if (neg) {
+        v = 0u - v;
+    }
+    return (uint16_t)v;
+}
+
 /* Applies one directive to the link state. The normal order is DSK, ORG,
  * one or more ASM, SNA. After an SNA, ORG and ASM continue the previous file,
  * with a warning. ASM may come before the first DSK; those modules are
@@ -504,6 +572,14 @@ static bool link_directive(Link *lk, const char *lk_path, int lineno, const SrcL
         } else {
             return link_fail(lk_path, lineno, "ALI needs NONE, PAGE or BANK");
         }
+        return true;
+    }
+    if (equal_ci(op, "XPL")) {
+        lk->xpl = true;
+        return true;
+    }
+    if (equal_ci(op, "AUX")) {
+        lk->aux = aux_value(ln->has_operand ? ln->operand : "");
         return true;
     }
     {
@@ -956,8 +1032,9 @@ static bool find_provider(const Link *lk, const AsmModule *res, const char *name
     return false;
 }
 
-/* Writes the OMF link: one segment per module, numbered in link order. The
- * module at index k is SEGNUM k+1, and a fixup that names an external label
+/* Writes the OMF link: one segment per module, numbered in link order. With
+ * an ExpressLoad (XPL and more than one module) the ExpressLoad is SEGNUM 1
+ * and the modules start at SEGNUM 2. A fixup that names an external label
  * refers to the provider's segment. */
 static bool write_omf_link(const Link *lk, const AsmModule *res)
 {
@@ -970,6 +1047,9 @@ static bool write_omf_link(const Link *lk, const AsmModule *res)
     size_t k;
     size_t i;
     bool ok = false;
+    bool express = lk->xpl && lk->nmods > 1;
+    /* SEGNUM of the first module: the ExpressLoad is 1 when present. */
+    int base = express ? 2 : 1;
 
     if (lk->nsegs == 0) {
         return true;
@@ -1016,10 +1096,10 @@ static bool write_omf_link(const Link *lk, const AsmModule *res)
                     fprintf(stderr, "asm816: no provider for external '%s'\n", fx->name);
                     goto out;
                 }
-                r->seg = (int)p + 1;
+                r->seg = (int)p + base;
             }
         }
-        segs[k].segnum = (int)k + 1;
+        segs[k].segnum = (int)k + base;
         segs[k].body = b->bytes;
         segs[k].body_len = b->len;
         segs[k].rel = rels[k];
@@ -1029,7 +1109,7 @@ static bool write_omf_link(const Link *lk, const AsmModule *res)
         segs[k].kind = lk->mods[k].kind;
         segs[k].align = lk->mods[k].align;
     }
-    err = omf_build(segs, lk->nmods, &out, &outlen);
+    err = omf_build(segs, lk->nmods, express, &out, &outlen);
     if (err != NULL) {
         fprintf(stderr, "asm816: %s\n", err);
         goto out;
@@ -1126,7 +1206,7 @@ static bool write_file_info_for(const Link *lk, const AsmModule *res)
         ok = true;
         goto out;
     }
-    ok = file_info_upsert(info_path, names, n, link_file_type(lk, res));
+    ok = file_info_upsert(info_path, names, n, link_file_type(lk, res), lk->aux);
     if (!ok) {
         fprintf(stderr, "asm816: cannot write _FileInformation.txt\n");
     }
