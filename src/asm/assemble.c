@@ -205,6 +205,8 @@ typedef struct {
     bool idx16;
     bool dummy;
     int32_t dummy_pc;
+    /* pc at the most recent non-DUM ORG (or the start), for the 64 KB object-size check. */
+    int32_t seg_base;
     /* Assembling flag, and for each open DO/IF the flag it saved. */
     bool cond_on;
     bool *conds;
@@ -859,6 +861,14 @@ static void emit(Asm *a, const uint8_t *bytes, int n)
     int i;
 
     for (i = 0; i < n; i++) {
+        /* merlin32 limits: a DUM address wraps past $FFFF, and a non-DUM run may not pass $10000 (16-bit). */
+        if (a->dummy) {
+            if ((a->pc & 0xFFFF) == 0xFFFF) {
+                diag(a, "DUM Object code size > 64 KB");
+            }
+        } else if ((a->seg_base & 0xFFFF) + (a->pc - a->seg_base) == 0x10000) {
+            diag(a, "Object code size > 64 KB");
+        }
         if (a->pc > 0xFFFFFF) {
             diag(a, "program counter passes $FFFFFF");
         } else if (a->pass == 2 && !a->dummy && !bin_append(a->bin, bytes[i])) {
@@ -970,6 +980,9 @@ static void org_directive(Asm *a, const SrcLine *ln)
         return;
     }
     a->pc = v;
+    if (!a->dummy) {
+        a->seg_base = v;
+    }
     if (a->rel) {
         a->rel_abs = true;
     }
@@ -1010,7 +1023,7 @@ static void ds_directive(Asm *a, const SrcLine *ln)
         return;
     }
     if (count > 0xFFFF) {
-        report(a, RANK_SIZE, "Error : Object code size > 64 KB (line %d, file '%s').", a->line_no, a->path);
+        report(a, RANK_SIZE, "Error : %sObject code size > 64 KB (line %d, file '%s').", a->dummy ? "DUM " : "", a->line_no, a->path);
         return;
     }
     if (next_item(&p, item, sizeof item)) {
@@ -3936,6 +3949,7 @@ static bool run_pass(Asm *a, int pass)
     a->line_no = 0;
     /* A standalone REL module is laid out from 0. bin->rel is set by an earlier run once REL is seen. */
     a->pc = (a->force_rel || (!a->linked && a->bin->rel)) ? 0 : a->start_pc;
+    a->seg_base = a->pc;
     a->scope[0] = '\0';
     a->ended = false;
     a->acc16 = false;

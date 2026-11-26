@@ -54,11 +54,11 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: the one titled "Match merlin32 link-file DSK, label,
-  and bare ORG rules" (`git log -1`). Uncommitted: the spec-audit fixes
-  (expressions, `$-N`, `!`/`|`, `DS \`, EQU display, CLI flags); see "Spec
-  audit" below. Phases 0–5 (flat and OMF linking, standalone REL) are done.
-  `ctest` passes 76/76 on GCC Debug and ASan/UBSan.
+- Latest commit on `main`: `7ccc7cb` (macro behavior). Uncommitted: spec-audit
+  group (c), size limits (64 KB rule, `DS`/`DUM` wording), with the bare `ORG`
+  and `REL` notes corrected; see "Spec audit" below. Groups (a) and (b) are
+  committed. Phases 0–5 (flat and OMF linking, standalone REL) are done.
+  `ctest` passes 83/83 on GCC Debug.
 - Next step: no open link questions remain. Pick the next item from Open
   questions or Deferred (disk image creation). Ask the user before any behavior
   change.
@@ -193,10 +193,22 @@ Error-only forms (both assemblers error, exit 1, wording differs, so not oracle
 cases): `PMC`/`>>>` with no delimiter (`MOVE#$10`), and a space after the name
 (`PMC MOVE #$10;$20`), which passes no arguments.
 
-Gaps confirmed, not yet fixed (no behavior change made):
+Group (c), size limits, fixed where measured (error-only, so probe-checked, not oracle cases).
+`DUM` errors when its address reaches `$FFFF` (`DUM Object code size > 64 KB`). A non-DUM
+run errors when it reaches `$10000` from its `ORG` (`Object code size > 64 KB`). `DS` over
+`$FFFF` errors, with the `DUM ` prefix inside a `DUM` block. Of 36 probed runs, asm816
+rejects every run merlin32 rejects.
 
-- Size limits: `DUM` past `$FFFF` and object code past `$10000` are accepted by asm816 (merlin32 errors).
-- Bare `ORG` is rejected by asm816 (merlin32 restores the global origin). `REL` after a label or code is accepted (merlin32 errors).
+Known mismatch, not matched (asm816 is stricter): merlin32 accepts 10 probed runs that
+cross `$FFFF` and asm816 rejects. Examples: `ORG $0 / DS $FFFF / NOP / NOP`, `ORG $0 /
+DS $10000` alone, and `ORG $1000 / DS $FFFF / NOP / NOP`. merlin32 also rejects others
+that end at the same address (`ORG $0 / DS $FFFD / NOP` x4, `ORG $FFFD / NOP` x4). No
+simple address or total-size rule matches all probes, and the cause was not identified.
+
+Gaps confirmed, not yet fixed:
+
+- Bare `ORG` (assembly, not linking) is rejected by asm816 with "ORG needs an address". merlin32 accepts it and keeps the current location: `ORG $1000 / NOP / ORG $2000 / NOP / ORG / NOP` puts the third NOP at `$1002`. The earlier note that merlin32 restores the global origin was wrong. The link-file bare `ORG` is separate and already matches (`link_cases/bare_org`).
+- `REL` after code, a label, `DS`, `DFB`, or `LDA`: no error in either assembler (probed). The earlier "merlin32 errors" claim was not reproduced and has been dropped.
 - `DSK ABC.L` writes `ABC.L` (merlin32 writes `ABC`).
 - `PUT INC.S` fails when the file is `inc.s` (merlin32 finds it case-insensitively).
 - Link files: `KND`, `ALI`, `LNA`, `XPL`, `AUX` are unknown directives in asm816 (merlin32 accepts `KND`/`ALI`, rejects conflicting `LNA`). `BSZ` and `DS` before `ASM` already match.
