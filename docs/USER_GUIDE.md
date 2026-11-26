@@ -60,7 +60,8 @@ Each run writes files into the current directory.
   entry for the same name and moves to the end.
 - **`<stem>_Output.txt`.** Written only with `-v` or `-vN`. It holds the
   listing, followed by the symbol tables with `-vN`. The stem follows the
-  `SAV`/`DSK` name when one is set.
+  `SAV`/`DSK` name when one is set. A `REL` file with no `SAV`/`DSK` writes
+  `_Output.txt`, as merlin32 does.
 
 If no `ORG` appears, the program counter starts at `$8000`.
 

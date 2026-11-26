@@ -54,9 +54,10 @@ bytes and listing.
 
 ## Resume here
 
-- Latest commit on `main`: `26cedf3` (`DSK`/`SAV` trailing `.L`). Uncommitted:
-  `PUT`/`USE` case-insensitive fallback (group d; REL default output names remain).
-  Groups (a) to (c) are committed. Phases 0–5 (flat and OMF linking, standalone REL) are
+- Latest commit on `main`: `e58c3ee` (`PUT`/`USE` case-insensitive lookup). Uncommitted:
+  REL listing named `_Output.txt` when no `SAV`/`DSK` (group d now done). Groups
+  (a) to (d) are committed or pending commit; (e) link directives is next and needs
+  the XPL/AUX design. Phases 0–5 (flat and OMF linking, standalone REL) are
   done. `ctest` passes 86/86 on GCC Debug with oracle paths.
 - Next step: no open link questions remain. Pick the next item from Open
   questions or Deferred (disk image creation). Ask the user before any behavior
@@ -262,6 +263,7 @@ Link-rule probes against merlin32 (black-box; all resolved):
 - [x] Output type in no-DSK links: the link-wide rule (last `TYP` applies to every output) matches merlin32 with three modules across seven `TYP` placements, including last-`TYP`-wins and no-`TYP` (OMF, so "DSK is missing").
 - [x] `DSK` after an open segment (`ASM`, no `SNA`, then `DSK`), and after an `ORG` with no `ASM`. merlin32 accepts both and writes every segment. asm816 now matches (`link_cases/dsk_after_open`).
 - [x] `PUT`/`USE` file names match case-insensitively when the exact name is missing (merlin32 opens `inc.s` for `PUT INC.S`). The exact name wins. Probed; fixed (`oracle/cases/put_case_insensitive.s`). Not defined: which file is used when several names differ only by case.
+- [x] REL with no `SAV`/`DSK` and `-v`: the listing is `_Output.txt` (merlin32 gives the same; was `rr_Output.txt`). Probed; fixed. No oracle case, since the runners need an output file. Checked by byte diff against merlin32.
 - [x] `DSK`/`SAV` name suffix. merlin32 drops one trailing `.L` (any case) from an assembly `DSK` or `SAV` name: `ABC.L` gives `ABC`, `AB.L.L` gives `AB.L`, `ABC.S` is kept. Link-file `DSK` keeps `.L` (`DSK OUT.L` gives `OUT.L`). asm816 now matches (`oracle/cases/output_dot_l.s`). Not matched: `DSK .L` alone, which merlin32 writes no file for.
 
 Deferred:

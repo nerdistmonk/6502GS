@@ -4270,8 +4270,10 @@ bool assemble_source(const char *path, const char *macro_dir, const char *listin
         fprintf(stderr, "      => [Error] %s\n", a.err_msg);
     }
     if (listing_stem != NULL) {
-        snprintf(lst_name, sizeof lst_name, "%s_Output.txt",
-                 out->out_name[0] != '\0' ? out->out_name : listing_stem);
+        /* merlin32 names a REL listing "_Output.txt" when the REL has no SAV or DSK. */
+        const char *base = out->out_name[0] != '\0' ? out->out_name : (out->rel ? "" : listing_stem);
+
+        snprintf(lst_name, sizeof lst_name, "%s_Output.txt", base);
         listing = fopen(lst_name, "w");
         if (listing == NULL) {
             perror(lst_name);
