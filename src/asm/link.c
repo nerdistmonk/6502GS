@@ -315,8 +315,8 @@ static bool add_module(Link *lk, const SrcLine *ln)
 }
 
 /* Returns the operand of a directive line as written: spaces inside the name
- * are kept and a trailing comment is dropped. parse_line stops at a space, so
- * LNA and SNA read the rest of the line from the raw text. */
+ * are kept and a trailing comment is dropped. parse_line strips blanks from
+ * the operand, so LNA and SNA read the rest of the line from the raw text. */
 static char *raw_operand(const char *text)
 {
     const char *p = text;

@@ -2843,7 +2843,7 @@ static bool dat_row(Asm *a, const SrcLine *ln, LineOrigin org, Source *out)
     int sel;
     char quote;
 
-    if (!ln->has_operand || ln->trailing || ln->operand[0] < '1' || ln->operand[0] > '8'
+    if (!ln->has_operand || ln->operand[0] < '1' || ln->operand[0] > '8'
         || ln->operand[1] != '\0') {
         return true;
     }
@@ -3497,13 +3497,14 @@ static bool explicit_call_op(const char *name)
 static void macro_line(Asm *a, const SrcLine *ln, bool explicit_call)
 {
     char name[ASM_NAME_MAX + 1];
+    char pmc_args[ASM_LINE_MAX];
     const char *target = ln->opcode;
     const char *args = explicit_call ? "" : ln->operand;
     bool has_args = ln->has_operand && !explicit_call;
     const Macro *m;
 
     if (explicit_call) {
-        const char *p = ln->operand;
+        const char *p = ln->operand_spaced;
         size_t n = 0;
 
         if (!ln->has_operand) {
@@ -3521,7 +3522,8 @@ static void macro_line(Asm *a, const SrcLine *ln, bool explicit_call)
         name[n] = '\0';
         target = name;
         if (p[n] != '\0' && p[n] != ' ') {
-            args = p + n + 1;
+            strip_blanks(p + n + 1, pmc_args);
+            args = pmc_args;
             has_args = true;
         }
     }

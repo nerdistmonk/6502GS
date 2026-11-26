@@ -26,21 +26,41 @@ static bool take_word(const char **pp, char *dst, size_t cap)
     return true;
 }
 
-/* An operand runs to the first blank outside quotes; anything after is comment. */
+/* A quote opens only if a matching close follows on the line. */
+static char quote_step(const char *p, char quote)
+{
+    if (quote != 0) {
+        return *p == quote ? 0 : quote;
+    }
+    if ((*p == '"' || *p == '\'') && strchr(p + 1, *p) != NULL) {
+        return *p;
+    }
+    return 0;
+}
+
+/* Blank runs outside quotes become one space. A blank run followed by ';' or
+ * the end of the line ends the operand, and the rest is comment. */
 static bool take_operand(const char **pp, char *dst, size_t cap)
 {
     const char *p = *pp;
     size_t n = 0;
     char quote = 0;
 
-    while (*p != '\0' && (quote != 0 || (*p != ' ' && *p != '\t'))) {
-        if (quote != 0) {
-            if (*p == quote) {
-                quote = 0;
+    while (*p != '\0') {
+        if (quote == 0 && (*p == ' ' || *p == '\t')) {
+            const char *next = skip_blanks(p);
+
+            if (*next == '\0' || *next == ';') {
+                break;
             }
-        } else if (*p == '"' || *p == '\'') {
-            quote = *p;
+            p = next;
+            if (n + 1 >= cap) {
+                return false;
+            }
+            dst[n++] = ' ';
+            continue;
         }
+        quote = quote_step(p, quote);
         if (n + 1 >= cap) {
             return false;
         }
@@ -49,6 +69,21 @@ static bool take_operand(const char **pp, char *dst, size_t cap)
     dst[n] = '\0';
     *pp = p;
     return true;
+}
+
+void strip_blanks(const char *src, char *dst)
+{
+    char quote = 0;
+    size_t n = 0;
+
+    for (; *src != '\0'; src++) {
+        if (quote == 0 && (*src == ' ' || *src == '\t')) {
+            continue;
+        }
+        quote = quote_step(src, quote);
+        dst[n++] = *src;
+    }
+    dst[n] = '\0';
 }
 
 static void note_comment(SrcLine *out, const char *p)
@@ -95,13 +130,13 @@ bool parse_line(const char *text, SrcLine *out, const char **err)
         note_comment(out, p);
         return true;
     }
-    if (!take_operand(&p, out->operand, sizeof out->operand)) {
+    if (!take_operand(&p, out->operand_spaced, sizeof out->operand_spaced)) {
         *err = "operand too long";
         return false;
     }
+    strip_blanks(out->operand_spaced, out->operand);
     out->has_operand = true;
     p = skip_blanks(p);
-    out->trailing = *p != '\0' && *p != ';';
     note_comment(out, p);
     return true;
 }
